@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
-import { api, LancamentoDoMes, ResumoMes } from "../api";
+import { api, LancamentoDoMes, ResumoMes, Seguro } from "../api";
+import { avisoVencimento } from "./Seguros";
 import { competenciaAtual, dataBR, mensagemErro, nomeMes, reais, somarMeses } from "../util";
 
 /** Responde "quanto eu gastei no mês", por categoria e por pessoa. */
-export default function Resumo() {
+export default function Resumo({ irPara }: { irPara: (aba: "seguros") => void }) {
+  const [vencendo, setVencendo] = useState<Seguro[]>([]);
+  useEffect(() => {
+    api.segurosVencendo().then(setVencendo).catch(() => setVencendo([]));
+  }, []);
+
   const [competencia, setCompetencia] = useState(competenciaAtual());
   const [resumo, setResumo] = useState<ResumoMes | null>(null);
   const [lancamentos, setLancamentos] = useState<LancamentoDoMes[]>([]);
@@ -30,6 +36,14 @@ export default function Resumo() {
         </div>
       </header>
       {erro && <div className="aviso erro">{erro}</div>}
+      {vencendo.map((s) => (
+        <div key={s.id} className="aviso alerta">
+          Seguro <strong>{s.descricao}</strong> {avisoVencimento(s.diasParaVencer)}.{" "}
+          <button className="link" onClick={() => irPara("seguros")}>
+            Ver seguros
+          </button>
+        </div>
+      ))}
 
       {resumo && (
         <>

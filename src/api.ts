@@ -43,12 +43,16 @@ export interface NovaTransacao {
   numParcelas: number;
   categoriaId: number | null;
   divisoes: Divisao[];
+  /** Fatura da 1ª parcela escolhida à mão (AAAA-MM). null = pelo dia de fechamento. */
+  competenciaFatura?: string | null;
 }
 
 export interface Transacao extends NovaTransacao {
   id: number;
   contaNome: string;
   categoriaNome: string | null;
+  importada: boolean;
+  primeiraFatura: string; // AAAA-MM
 }
 
 export interface LancamentoDoMes {
@@ -161,6 +165,136 @@ export interface ResumoMes {
   acertos: Acerto[];
 }
 
+export interface SugestaoMensalidade {
+  chave: string;
+  descricao: string;
+  contaId: number;
+  contaNome: string;
+  valor: number;
+  diaCobranca: number;
+  meses: number;
+  ultimaData: string;
+  proximaCobranca: string;
+  categoriaId: number | null;
+}
+
+// ---------- Importação ----------
+
+export interface MapaColunas {
+  data: number;
+  descricao: number;
+  valor: number;
+  tipo: number | null;
+}
+
+export type TipoLinha = "gasto" | "entrada";
+
+export interface LinhaPrevia {
+  data: string;
+  descricao: string;
+  valor: number;
+  tipo: TipoLinha;
+  hash: string;
+  duplicada: boolean;
+  motivoIgnorar: string | null;
+  categoriaId: number | null;
+  parcela: string | null;
+}
+
+export interface PreviaImportacao {
+  formato: "ofx" | "csv";
+  cabecalho: string[];
+  mapa: MapaColunas | null;
+  contaCartao: boolean;
+  sinalInvertido: boolean;
+  competenciaSugerida: string | null;
+  linhas: LinhaPrevia[];
+  ilegiveis: number;
+}
+
+export interface ItemImportacao {
+  data: string;
+  descricao: string;
+  valor: number;
+  tipo: TipoLinha;
+  hash: string;
+  categoriaId: number | null;
+}
+
+export interface ResultadoImportacao {
+  compras: number;
+  entradas: number;
+  duplicadas: number;
+}
+
+// ---------- Backup ----------
+
+export interface InfoBackup {
+  pasta: string | null;
+  ultimo: string | null;
+  cifrado: boolean;
+}
+
+// ---------- Veículos e seguros ----------
+
+export interface NovoVeiculo {
+  nome: string;
+  placa: string | null;
+  ano: number | null;
+  pessoaId: number | null;
+}
+
+export interface Veiculo {
+  id: number;
+  nome: string;
+  placa: string | null;
+  ano: number | null;
+  pessoaId: number;
+  pessoaNome: string;
+}
+
+export type TipoSeguro = "auto" | "saude" | "vida" | "residencial" | "outro";
+
+export const TIPOS_SEGURO: { id: TipoSeguro; nome: string }[] = [
+  { id: "auto", nome: "Automóvel" },
+  { id: "saude", nome: "Saúde" },
+  { id: "vida", nome: "Vida" },
+  { id: "residencial", nome: "Residencial" },
+  { id: "outro", nome: "Outro" },
+];
+
+export interface PagamentoSeguro {
+  contaId: number;
+  valor: number;
+  primeiraCobranca: string;
+  categoriaId: number | null;
+}
+
+export interface NovoSeguro {
+  tipo: TipoSeguro;
+  descricao: string;
+  seguradora: string | null;
+  pessoaId: number | null;
+  veiculoId: number | null;
+  vigenciaFim: string | null;
+  pagamento: PagamentoSeguro | null;
+}
+
+export interface Seguro {
+  id: number;
+  tipo: TipoSeguro;
+  descricao: string;
+  seguradora: string | null;
+  pessoaId: number;
+  pessoaNome: string;
+  veiculoId: number | null;
+  veiculoNome: string | null;
+  vigenciaFim: string | null;
+  diasParaVencer: number | null;
+  mensalidadeId: number | null;
+  valorMensal: number | null;
+}
+
 export interface StatusBloqueio {
   temSenha: boolean;
   desbloqueado: boolean;
@@ -188,6 +322,8 @@ export const api = {
 
   criarTransacao: (transacao: NovaTransacao) =>
     invoke<Transacao>("criar_transacao", { transacao }),
+  atualizarTransacao: (id: number, transacao: NovaTransacao) =>
+    invoke<Transacao>("atualizar_transacao", { id, transacao }),
   listarTransacoes: () => invoke<Transacao[]>("listar_transacoes"),
   excluirTransacao: (id: number) => invoke<void>("excluir_transacao", { id }),
   lancamentosDoMes: (competencia: string) =>
@@ -195,13 +331,19 @@ export const api = {
 
   criarMensalidade: (mensalidade: NovaMensalidade) =>
     invoke<Mensalidade>("criar_mensalidade", { mensalidade }),
+  atualizarMensalidade: (id: number, mensalidade: NovaMensalidade) =>
+    invoke<Mensalidade>("atualizar_mensalidade", { id, mensalidade }),
   listarMensalidades: () => invoke<Mensalidade[]>("listar_mensalidades"),
+  sugerirMensalidades: () => invoke<SugestaoMensalidade[]>("sugerir_mensalidades"),
+  ignorarSugestao: (chave: string) => invoke<void>("ignorar_sugestao", { chave }),
   cancelarMensalidade: (id: number, ultimoMes: string) =>
     invoke<Mensalidade>("cancelar_mensalidade", { id, ultimoMes }),
   reativarMensalidade: (id: number) => invoke<Mensalidade>("reativar_mensalidade", { id }),
   excluirMensalidade: (id: number) => invoke<void>("excluir_mensalidade", { id }),
 
   criarEntrada: (entrada: NovaEntrada) => invoke<Entrada>("criar_entrada", { entrada }),
+  atualizarEntrada: (id: number, entrada: NovaEntrada) =>
+    invoke<Entrada>("atualizar_entrada", { id, entrada }),
   listarEntradas: () => invoke<Entrada[]>("listar_entradas"),
   excluirEntrada: (id: number) => invoke<void>("excluir_entrada", { id }),
 
@@ -212,4 +354,33 @@ export const api = {
   simularCompra: (simulacao: SimulacaoCompra, inicio: string, meses: number) =>
     invoke<ComparacaoMes[]>("simular_compra", { simulacao, inicio, meses }),
   resumoMes: (competencia: string) => invoke<ResumoMes>("resumo_mes", { competencia }),
+
+  previaImportacao: (
+    caminho: string,
+    contaId: number,
+    mapa: MapaColunas | null,
+    inverterSinal: boolean | null,
+  ) => invoke<PreviaImportacao>("previa_importacao", { caminho, contaId, mapa, inverterSinal }),
+  confirmarImportacao: (contaId: number, competenciaFatura: string | null, itens: ItemImportacao[]) =>
+    invoke<ResultadoImportacao>("confirmar_importacao", { contaId, competenciaFatura, itens }),
+
+  infoBackup: () => invoke<InfoBackup>("info_backup"),
+  fazerBackup: (destino: string) => invoke<void>("fazer_backup", { destino }),
+  restaurarBackup: (origem: string, senha: string | null) =>
+    invoke<void>("restaurar_backup", { origem, senha }),
+  definirPastaBackup: (pasta: string | null) => invoke<void>("definir_pasta_backup", { pasta }),
+  backupAgora: () => invoke<string | null>("backup_agora"),
+
+  listarVeiculos: () => invoke<Veiculo[]>("listar_veiculos"),
+  criarVeiculo: (veiculo: NovoVeiculo) => invoke<Veiculo>("criar_veiculo", { veiculo }),
+  atualizarVeiculo: (id: number, veiculo: NovoVeiculo) =>
+    invoke<Veiculo>("atualizar_veiculo", { id, veiculo }),
+  excluirVeiculo: (id: number) => invoke<void>("excluir_veiculo", { id }),
+  listarSeguros: () => invoke<Seguro[]>("listar_seguros"),
+  segurosVencendo: () => invoke<Seguro[]>("seguros_vencendo"),
+  criarSeguro: (seguro: NovoSeguro) => invoke<Seguro>("criar_seguro", { seguro }),
+  atualizarSeguro: (id: number, seguro: NovoSeguro) =>
+    invoke<Seguro>("atualizar_seguro", { id, seguro }),
+  excluirSeguro: (id: number, excluirPagamento: boolean) =>
+    invoke<void>("excluir_seguro", { id, excluirPagamento }),
 };

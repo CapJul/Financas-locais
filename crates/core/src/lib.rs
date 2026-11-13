@@ -5,6 +5,7 @@
 pub mod competencia;
 pub mod dominio;
 pub mod erro;
+pub mod extrato;
 pub mod modelos;
 pub mod repositorio;
 pub mod seguranca;

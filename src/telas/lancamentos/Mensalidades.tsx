@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import type { Base } from "../../App";
-import { api, Mensalidade } from "../../api";
-import { competenciaAtual, hoje, lerReais, mensagemErro, nomeMes, reais } from "../../util";
+import { api, Mensalidade, SugestaoMensalidade } from "../../api";
+import { competenciaAtual, dataBR, hoje, lerReais, mensagemErro, nomeMes, paraCampo, reais } from "../../util";
 
 /** Gastos que se repetem todo mês (ex.: assinatura do Claude, Spotify, academia). */
 export default function Mensalidades({ base }: { base: Base }) {
@@ -13,12 +13,54 @@ export default function Mensalidades({ base }: { base: Base }) {
   const [categoriaId, setCategoriaId] = useState<number | "">("");
   const [pessoaId, setPessoaId] = useState<number>(1);
 
+  const [editando, setEditando] = useState<Mensalidade | null>(null);
+  const [sugestoes, setSugestoes] = useState<SugestaoMensalidade[]>([]);
   const [lista, setLista] = useState<Mensalidade[]>([]);
   const [erro, setErro] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
   const carregar = () =>
-    api.listarMensalidades().then(setLista).catch((e) => setErro(mensagemErro(e)));
+    Promise.all([api.listarMensalidades(), api.sugerirMensalidades()])
+      .then(([l, s]) => {
+        setLista(l);
+        setSugestoes(s);
+      })
+      .catch((e) => setErro(mensagemErro(e)));
+
+  function limpar() {
+    setEditando(null);
+    setDescricao("");
+    setValor("");
+    setPrimeira(hoje());
+    setCategoriaId("");
+    setPessoaId(1);
+  }
+
+  function editar(m: Mensalidade) {
+    setEditando(m);
+    setErro(null);
+    setOk(null);
+    setContaId(m.contaId);
+    setDescricao(m.descricao);
+    setValor(paraCampo(m.valor));
+    const dia = String(Math.min(m.diaCobranca, 28)).padStart(2, "0");
+    setPrimeira(`${m.inicio}-${dia}`);
+    setCategoriaId(m.categoriaId ?? "");
+    setPessoaId(m.pessoaId);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  /** Preenche o formulário com a sugestão para você conferir e cadastrar. */
+  function usarSugestao(s: SugestaoMensalidade) {
+    limpar();
+    setContaId(s.contaId);
+    setDescricao(s.descricao);
+    setValor(paraCampo(s.valor));
+    setPrimeira(s.proximaCobranca);
+    setCategoriaId(s.categoriaId ?? "");
+    setOk(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   useEffect(() => {
     carregar();
@@ -37,18 +79,23 @@ export default function Mensalidades({ base }: { base: Base }) {
     const v = lerReais(valor);
     if (contaId === "") return setErro("Escolha uma conta.");
     if (v === null || v <= 0) return setErro("Valor inválido. Ex.: 110,00");
+    const dados = {
+      contaId,
+      descricao,
+      valor: v,
+      primeiraCobranca: primeira,
+      categoriaId: categoriaId === "" ? null : categoriaId,
+      pessoaId,
+    };
     try {
-      await api.criarMensalidade({
-        contaId,
-        descricao,
-        valor: v,
-        primeiraCobranca: primeira,
-        categoriaId: categoriaId === "" ? null : categoriaId,
-        pessoaId,
-      });
-      setOk(`Mensalidade "${descricao}" cadastrada.`);
-      setDescricao("");
-      setValor("");
+      if (editando) {
+        await api.atualizarMensalidade(editando.id, dados);
+        setOk(`Mensalidade "${descricao}" atualizada.`);
+      } else {
+        await api.criarMensalidade(dados);
+        setOk(`Mensalidade "${descricao}" cadastrada.`);
+      }
+      limpar();
       carregar();
     } catch (e) {
       setErro(mensagemErro(e));
@@ -80,7 +127,39 @@ export default function Mensalidades({ base }: { base: Base }) {
 
   return (
     <>
-      <form className="cartao formulario" onSubmit={salvar}>
+      {sugestoes.length > 0 && !editando && (
+        <div className="cartao sugestoes">
+          <h3>Parecem mensalidades</h3>
+          <p className="dica">
+            Cobranças que se repetiram em 3 meses ou mais nas suas compras. Cadastre para elas
+            entrarem nas próximas faturas.
+          </p>
+          <ul className="itens">
+            {sugestoes.map((s) => (
+              <li key={s.chave}>
+                <span>
+                  <strong>{s.descricao}</strong> · {reais(s.valor)} · {s.contaNome} · dia{" "}
+                  {s.diaCobranca} · {s.meses} meses (última em {dataBR(s.ultimaData)})
+                </span>
+                <span className="acoes">
+                  <button className="link" onClick={() => usarSugestao(s)}>
+                    Cadastrar
+                  </button>
+                  <button
+                    className="link suave"
+                    onClick={() => api.ignorarSugestao(s.chave).then(carregar)}
+                  >
+                    Não é mensalidade
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <form className={`cartao formulario ${editando ? "editando" : ""}`} onSubmit={salvar}>
+        {editando && <div className="faixa-edicao">Editando "{editando.descricao}"</div>}
         <div className="grade">
           <label className="largo">
             Descrição
@@ -146,9 +225,16 @@ export default function Mensalidades({ base }: { base: Base }) {
         </p>
         {erro && <div className="aviso erro">{erro}</div>}
         {ok && <div className="aviso ok">{ok}</div>}
-        <button type="submit" className="primario" disabled={contas.length === 0}>
-          Cadastrar mensalidade
-        </button>
+        <div className="botoes">
+          <button type="submit" className="primario" disabled={contas.length === 0}>
+            {editando ? "Salvar alterações" : "Cadastrar mensalidade"}
+          </button>
+          {editando && (
+            <button type="button" onClick={limpar}>
+              Cancelar edição
+            </button>
+          )}
+        </div>
       </form>
 
       <h3>
@@ -204,7 +290,12 @@ export default function Mensalidades({ base }: { base: Base }) {
                         Voltar
                       </button>
                     </span>
-                  ) : m.fim ? (
+                  ) : (
+                    <button className="link" onClick={() => editar(m)}>
+                      Editar
+                    </button>
+                  )}
+                  {cancelando?.id === m.id ? null : m.fim ? (
                     <button className="link" onClick={() => acao(() => api.reativarMensalidade(m.id))}>
                       Reativar
                     </button>

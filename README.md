@@ -17,17 +17,21 @@ Os dados ficam só na sua máquina, num arquivo SQLite.
 
 **Aviso do Windows:** como o instalador ainda não tem assinatura digital paga, o Windows pode mostrar "O Windows protegeu o computador". Clique em **Mais informações → Executar assim mesmo**. O código-fonte completo está neste repositório.
 
-## O que já funciona
+## O que já funciona (v0.2)
 
 - **Cadastros:** contas correntes, cartões (com dia de fechamento e vencimento), pessoas e categorias.
-- **Lançamentos**, em três tipos:
+- **Lançamentos**, em três tipos, todos editáveis:
   - **Compra** à vista ou parcelada (até 120x). Pode ser sua, só de outra pessoa ("minha mãe usou meu cartão") ou dividida ("de R$ 100, R$ 50 é da minha irmã").
   - **Mensalidade:** gasto que se repete todo mês (ex.: assinatura do Claude), com dono, até ser cancelado.
   - **Entrada:** pix, salário, pagamentos e reembolsos recebidos. Pode indicar quem pagou.
-- **Resumo do mês:** entradas, gastos e saldo; gastos por categoria, por pessoa e por tipo (à vista, parcelado, mensalidades); acerto acumulado com cada pessoa (quanto gastou, quanto já pagou, quanto falta).
-- **Faturas:** próximas faturas de cada cartão (3 a 24 meses) com gráficos por tipo de gasto, por categoria e por pessoa, e o detalhe de cada mês por categoria.
+- **Importar extrato ou fatura** em OFX ou CSV (Banco do Brasil, PicPay e outros bancos com colunas de data, descrição e valor). Mostra uma prévia, sugere a categoria pelo histórico, desmarca linhas de saldo e pagamento de fatura, e não importa a mesma linha duas vezes.
+- **Sugestão de mensalidades:** cobranças que se repetem em 3 meses ou mais aparecem para você cadastrar com um clique.
+- **Resumo do mês:** entradas, gastos e saldo; gastos por categoria, pessoa e tipo; acerto acumulado com cada pessoa; aviso de seguro perto de vencer.
+- **Faturas:** próximas faturas de cada cartão com gráficos por tipo de gasto, categoria e pessoa.
 - **Simulador:** "se eu comprar X por Y em Z vezes", mostra as faturas antes e depois, sem salvar nada.
-- **Senha de acesso:** opcional, em Cadastros → Segurança. Com senha, o app abre bloqueado e tem o botão "Bloquear" no menu.
+- **Seguros e veículos:** seguro do carro, de saúde, de vida etc., com o pagamento mensal entrando nas faturas e aviso quando a vigência está acabando.
+- **Senha com criptografia:** com senha, o arquivo dos dados é criptografado (SQLCipher, AES-256).
+- **Backup:** manual, restauração e backup automático numa pasta do OneDrive ou Google Drive.
 
 ## Regras de cálculo
 
@@ -45,6 +49,7 @@ As regras estão em `crates/core/src/dominio.rs`, cobertas por testes.
 
 ### Pré-requisitos no Windows
 
+0. **Strawberry Perl** ([strawberryperl.com](https://strawberryperl.com)): a criptografia (SQLCipher + OpenSSL) é compilada junto e precisa de Perl. Só para quem compila; quem baixa o instalador não precisa.
 1. **Microsoft C++ Build Tools**: instale o [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) e marque "Desenvolvimento para desktop com C++".
 2. **Rust**: instale pelo [rustup](https://rustup.rs) (`rustup-init.exe`).
 3. **Node.js LTS**: [nodejs.org](https://nodejs.org).
@@ -78,12 +83,18 @@ A primeira compilação do Rust demora alguns minutos; as seguintes são rápida
 
 Para fazer backup manual, feche o app e copie esse arquivo.
 
-### Sobre a senha
+### Sobre a senha e a criptografia
 
-- Só o hash da senha (Argon2) é guardado, nunca a senha em si.
-- Com o app bloqueado, o núcleo em Rust recusa qualquer leitura ou gravação, mesmo que alguém mexa na interface.
-- **Limite:** a senha bloqueia o app, não cifra o arquivo `financas.db`. Quem tiver acesso ao seu usuário do Windows e souber onde está o arquivo pode abri-lo com um leitor de SQLite. Cifrar o arquivo (SQLCipher) está previsto para uma próxima etapa.
-- Não há recuperação de senha esquecida. Se acontecer, apague a linha `senha_hash` da tabela `config` com um leitor de SQLite.
+- Com senha definida (Cadastros → Segurança), o arquivo `financas.db` inteiro fica criptografado com SQLCipher (AES-256, chave derivada da senha). Sem a senha, nem o app nem um leitor de SQLite conseguem abrir.
+- **Não há recuperação de senha.** Se esquecer, os dados não abrem. Por isso, mantenha o backup automático ligado e lembre a senha que o backup usa.
+- "Bloquear" fecha o banco e tira a chave da memória até a senha ser digitada de novo.
+- Quem vem da v0.1 com senha: ao abrir a v0.2 e digitar a senha, o arquivo é criptografado na hora.
+
+### Backup
+
+- **Automático:** em Cadastros → Backup, escolha uma pasta dentro do OneDrive ou do Google Drive. Ao abrir, o app salva uma cópia lá (no máximo uma por dia) e guarda as 10 mais recentes. O programa da nuvem sincroniza sozinho.
+- Com senha, os backups saem criptografados com ela. Sem senha, saem abertos.
+- **Restaurar:** escolha o arquivo e informe a senha que o app tinha quando o backup foi feito. Depois de restaurado, os dados ficam com a senha atual.
 
 ## Estrutura
 
@@ -91,6 +102,8 @@ Para fazer backup manual, feche o app e copie esse arquivo.
 crates/core/          Núcleo em Rust, sem dependência do Tauri
   src/dominio.rs      Regras de fatura, parcelas, divisão e projeção
   src/repositorio.rs  SQLite: migrações, cadastros, lançamentos, resumo, simulação
+  src/repositorio/    Arquivo e criptografia, importação, sugestões, seguros
+  src/extrato.rs      Leitura de OFX e CSV dos bancos
   src/modelos.rs      Estruturas trocadas com a interface
   src/competencia.rs  Tipo AAAA-MM (mês da fatura)
 src-tauri/            App Tauri: expõe o núcleo como comandos
@@ -109,10 +122,8 @@ O workflow `Release` percebe a mudança de versão, compila para Windows e Linux
 
 ## Próximas etapas
 
-4. Importação de extrato/fatura em CSV e OFX, com deduplicação.
-5. Backup local pelo app.
-6. Backup cifrado no Google Drive/OneDrive, importação de PDF, seguros e veículos.
-7. Previsão com aprendizado de máquina.
+- Importação de fatura em PDF e do relatório do Registrato (Banco Central).
+- Previsão de gastos com aprendizado de máquina.
 
 ## Licença
 

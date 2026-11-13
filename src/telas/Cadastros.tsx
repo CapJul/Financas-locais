@@ -1,6 +1,7 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Base } from "../App";
-import { api, TipoConta } from "../api";
+import { api, InfoBackup, TipoConta } from "../api";
 import { mensagemErro } from "../util";
 
 /** Contas/cartões, pessoas (perfis) e categorias. */
@@ -30,6 +31,7 @@ export default function Cadastros({ base }: { base: Base }) {
         <Categorias base={base} executar={executar} />
       </div>
       <Seguranca base={base} />
+      <Backup base={base} />
     </section>
   );
 }
@@ -205,9 +207,9 @@ function Seguranca({ base }: { base: Base }) {
       <h3>Segurança</h3>
       <p className="dica">
         {base.temSenha
-          ? "O app pede senha ao abrir. Use \"Bloquear\" no menu ao sair do computador."
-          : "Defina uma senha para que outras pessoas que usam este computador não abram o app."}{" "}
-        Não há como recuperar a senha esquecida.
+          ? "Seus dados estão criptografados com a senha. O app pede a senha ao abrir; use \"Bloquear\" no menu ao sair do computador."
+          : "Com uma senha, o arquivo dos seus dados fica criptografado: ninguém abre sem ela, nem fora do app."}{" "}
+        <strong>Não há como recuperar a senha esquecida</strong>: sem ela os dados não abrem. Mantenha o backup em dia.
       </p>
       <form className="linha-form" onSubmit={(e) => salvar(e)}>
         {base.temSenha && (
@@ -224,6 +226,153 @@ function Seguranca({ base }: { base: Base }) {
           Remover senha
         </button>
       )}
+      {erro && <div className="aviso erro">{erro}</div>}
+      {ok && <div className="aviso ok">{ok}</div>}
+    </div>
+  );
+}
+
+/** Backup manual, restauração e backup automático numa pasta sincronizada. */
+function Backup({ base }: { base: Base }) {
+  const [info, setInfo] = useState<InfoBackup | null>(null);
+  const [senhaBackup, setSenhaBackup] = useState("");
+  const [arquivoRestaurar, setArquivoRestaurar] = useState<string | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+
+  const carregar = () => api.infoBackup().then(setInfo).catch((e) => setErro(mensagemErro(e)));
+  useEffect(() => {
+    carregar();
+  }, []);
+
+  async function executar(acao: () => Promise<string | void>) {
+    setErro(null);
+    setOk(null);
+    setOcupado(true);
+    try {
+      const msg = await acao();
+      if (msg) setOk(msg);
+      await carregar();
+    } catch (e) {
+      setErro(mensagemErro(e));
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  const fazerBackup = () =>
+    executar(async () => {
+      const hojeTxt = new Date().toISOString().slice(0, 10);
+      const destino = await save({
+        defaultPath: `financas-locais-${hojeTxt}.db`,
+        filters: [{ name: "Backup do Finanças Locais", extensions: ["db"] }],
+      });
+      if (!destino) return;
+      await api.fazerBackup(destino);
+      return `Backup salvo em ${destino}`;
+    });
+
+  const escolherPasta = () =>
+    executar(async () => {
+      const pasta = await open({ directory: true, multiple: false });
+      if (typeof pasta !== "string") return;
+      await api.definirPastaBackup(pasta);
+      const arquivo = await api.backupAgora();
+      return arquivo ? `Pasta definida e primeiro backup feito: ${arquivo}` : "Pasta definida.";
+    });
+
+  const escolherArquivoRestaurar = async () => {
+    const arq = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Backup do Finanças Locais", extensions: ["db"] }],
+    });
+    if (typeof arq === "string") setArquivoRestaurar(arq);
+  };
+
+  const restaurar = () =>
+    executar(async () => {
+      if (!arquivoRestaurar) return;
+      if (!window.confirm("Restaurar substitui TODOS os dados atuais pelos do backup. Continuar?")) return;
+      await api.restaurarBackup(arquivoRestaurar, senhaBackup || null);
+      setArquivoRestaurar(null);
+      setSenhaBackup("");
+      await base.recarregar();
+      return "Backup restaurado.";
+    });
+
+  return (
+    <div className="cartao">
+      <h3>Backup</h3>
+      <p className="dica">
+        {info?.cifrado
+          ? "Os backups saem criptografados com a sua senha."
+          : "Sem senha, os backups saem sem criptografia. Defina uma senha acima para protegê-los."}
+      </p>
+
+      <h4>Backup automático na nuvem</h4>
+      <p className="dica">
+        Escolha uma pasta do OneDrive ou do Google Drive no seu computador. O app guarda uma cópia lá ao abrir
+        (no máximo uma por dia) e mantém as 10 mais recentes; o programa da nuvem sobe sozinho.
+      </p>
+      <div className="linha-form">
+        <button className="primario" onClick={escolherPasta} disabled={ocupado}>
+          {info?.pasta ? "Trocar pasta" : "Escolher pasta"}
+        </button>
+        {info?.pasta && (
+          <>
+            <button onClick={() => executar(async () => {
+              const a = await api.backupAgora();
+              return a ? `Backup feito: ${a}` : undefined;
+            })} disabled={ocupado}>
+              Fazer backup agora
+            </button>
+            <button className="perigo" onClick={() => executar(async () => {
+              await api.definirPastaBackup(null);
+              return "Backup automático desligado.";
+            })}>
+              Desligar
+            </button>
+          </>
+        )}
+      </div>
+      {info?.pasta && (
+        <p className="pequeno">
+          Pasta: {info.pasta}
+          <br />
+          Último backup automático: {info.ultimo ?? "ainda não feito"}
+        </p>
+      )}
+
+      <h4>Backup manual</h4>
+      <div className="linha-form">
+        <button onClick={fazerBackup} disabled={ocupado}>
+          Salvar backup em…
+        </button>
+      </div>
+
+      <h4>Restaurar</h4>
+      <div className="linha-form">
+        <button onClick={escolherArquivoRestaurar} disabled={ocupado}>
+          Escolher backup
+        </button>
+        {arquivoRestaurar && (
+          <>
+            <span className="pequeno">{arquivoRestaurar.split(/[\\/]/).pop()}</span>
+            <input
+              type="password"
+              placeholder="Senha do backup (se tinha)"
+              value={senhaBackup}
+              onChange={(e) => setSenhaBackup(e.target.value)}
+            />
+            <button className="perigo" onClick={restaurar} disabled={ocupado}>
+              Restaurar
+            </button>
+          </>
+        )}
+      </div>
+
       {erro && <div className="aviso erro">{erro}</div>}
       {ok && <div className="aviso ok">{ok}</div>}
     </div>

@@ -1,7 +1,7 @@
 //! Persistência em SQLite. Um único arquivo `.db` guarda tudo.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::PathBuf;
 
 use chrono::Datelike;
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
@@ -10,12 +10,11 @@ use crate::competencia::Competencia;
 use crate::dominio::{self, ratear};
 use crate::erro::{invalido, Erro, Resultado};
 use crate::modelos::*;
-use crate::seguranca;
 
 /// Pessoa padrão: recebe a compra inteira quando não há divisão.
 pub const PESSOA_EU: i64 = 1;
 
-const MIGRACOES: &[&str] = &[
+pub(crate) const MIGRACOES: &[&str] = &[
     // v1 — esquema inicial
     r#"
     CREATE TABLE pessoa (
@@ -97,6 +96,28 @@ const MIGRACOES: &[&str] = &[
         valor TEXT NOT NULL
     );
     "#,
+    // v3 — importação de entradas sem duplicar, veículos e seguros
+    r#"
+    ALTER TABLE entrada ADD COLUMN hash_importacao TEXT;
+    CREATE UNIQUE INDEX idx_entrada_hash ON entrada(hash_importacao) WHERE hash_importacao IS NOT NULL;
+    CREATE TABLE veiculo (
+        id        INTEGER PRIMARY KEY,
+        nome      TEXT NOT NULL,
+        placa     TEXT,
+        ano       INTEGER,
+        pessoa_id INTEGER NOT NULL DEFAULT 1 REFERENCES pessoa(id) ON DELETE RESTRICT
+    );
+    CREATE TABLE seguro (
+        id             INTEGER PRIMARY KEY,
+        tipo           TEXT NOT NULL CHECK (tipo IN ('auto', 'saude', 'vida', 'residencial', 'outro')),
+        descricao      TEXT NOT NULL,
+        seguradora     TEXT,
+        pessoa_id      INTEGER NOT NULL DEFAULT 1 REFERENCES pessoa(id) ON DELETE RESTRICT,
+        veiculo_id     INTEGER REFERENCES veiculo(id) ON DELETE SET NULL,
+        vigencia_fim   TEXT,
+        mensalidade_id INTEGER REFERENCES assinatura(id) ON DELETE SET NULL
+    );
+    "#,
 ];
 
 /// Mensalidade já com o deslocamento de fatura calculado.
@@ -132,8 +153,22 @@ impl Somador {
     }
 }
 
+mod arquivo;
+mod importacao;
+mod seguros;
+mod sugestoes;
+
+pub use arquivo::{InfoBackup, SituacaoArquivo};
+pub use importacao::{ItemImportacao, LinhaPrevia, PreviaImportacao, ResultadoImportacao, TipoLinha};
+pub use seguros::{NovoSeguro, NovoVeiculo, PagamentoSeguro, Seguro, TipoSeguro, Veiculo};
+pub use sugestoes::SugestaoMensalidade;
+
 pub struct Repositorio {
     conn: Connection,
+    /// Arquivo no disco (None = banco em memória, usado nos testes).
+    caminho: Option<PathBuf>,
+    /// Senha que abriu o arquivo cifrado (None = arquivo sem criptografia).
+    chave: Option<String>,
 }
 
 /// Traduz violações de restrição do SQLite em mensagens para o usuário.
@@ -161,17 +196,14 @@ fn texto_obrigatorio(valor: &str, campo: &str) -> Resultado<String> {
 }
 
 impl Repositorio {
-    pub fn abrir(caminho: impl AsRef<Path>) -> Resultado<Self> {
-        Self::preparar(Connection::open(caminho)?)
-    }
-
     pub fn em_memoria() -> Resultado<Self> {
-        Self::preparar(Connection::open_in_memory()?)
+        Self::preparar(Connection::open_in_memory()?, None, None)
     }
 
-    fn preparar(conn: Connection) -> Resultado<Self> {
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
-        let mut repo = Self { conn };
+    fn preparar(conn: Connection, caminho: Option<PathBuf>, chave: Option<String>) -> Resultado<Self> {
+        // DELETE (e não WAL): o banco fica num arquivo só, o que simplifica backup e criptografia.
+        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = DELETE;")?;
+        let mut repo = Self { conn, caminho, chave };
         repo.migrar()?;
         Ok(repo)
     }
@@ -318,11 +350,36 @@ impl Repositorio {
     // ---------- Transações ----------
 
     pub fn criar_transacao(&mut self, nova: NovaTransacao) -> Resultado<Transacao> {
+        let id = self.gravar_transacao(None, &nova, None)?;
+        self.buscar_transacao(id)
+    }
+
+    /// Edita uma compra: refaz as parcelas e a divisão a partir dos dados novos.
+    pub fn atualizar_transacao(&mut self, id: i64, nova: NovaTransacao) -> Resultado<Transacao> {
+        self.buscar_transacao(id)?;
+        self.gravar_transacao(Some(id), &nova, None)?;
+        self.buscar_transacao(id)
+    }
+
+    /// Cria (`id = None`) ou reescreve uma compra com suas parcelas e divisões.
+    /// `hash` marca compras importadas, para não duplicar numa nova importação.
+    fn gravar_transacao(
+        &mut self,
+        id: Option<i64>,
+        nova: &NovaTransacao,
+        hash: Option<&str>,
+    ) -> Resultado<i64> {
         let descricao = texto_obrigatorio(&nova.descricao, "a descrição")?;
         let data = dominio::ler_data(&nova.data_compra)?;
         let conta = self.buscar_conta(nova.conta_id)?;
-        let parcelas =
+        let mut parcelas =
             dominio::gerar_parcelas(data, nova.valor_total, nova.num_parcelas, conta.dia_fechamento)?;
+        // Fatura informada à mão (ou vinda da importação) manda sobre a regra do fechamento.
+        if let Some(primeira) = nova.competencia_fatura {
+            for (i, p) in parcelas.iter_mut().enumerate() {
+                p.competencia = primeira.somar_meses(i as i32);
+            }
+        }
 
         let divisoes = if nova.divisoes.is_empty() {
             vec![Divisao { pessoa_id: PESSOA_EU, valor: nova.valor_total }]
@@ -333,13 +390,47 @@ impl Repositorio {
         dominio::validar_divisoes(nova.valor_total, &pares)?;
 
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO transacao (conta_id, descricao, data_compra, valor_total, num_parcelas, categoria_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![conta.id, descricao, nova.data_compra, nova.valor_total, nova.num_parcelas, nova.categoria_id],
-        )
-        .map_err(|e| traduzir(e, "categoria inexistente", ""))?;
-        let id = tx.last_insert_rowid();
+        let id = match id {
+            None => {
+                tx.execute(
+                    "INSERT INTO transacao (conta_id, descricao, data_compra, valor_total, num_parcelas,
+                                            categoria_id, origem, hash_importacao)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        conta.id,
+                        descricao,
+                        nova.data_compra,
+                        nova.valor_total,
+                        nova.num_parcelas,
+                        nova.categoria_id,
+                        if hash.is_some() { "importado" } else { "manual" },
+                        hash
+                    ],
+                )
+                .map_err(|e| traduzir(e, "categoria inexistente", "essa compra já foi importada"))?;
+                tx.last_insert_rowid()
+            }
+            Some(id) => {
+                tx.execute(
+                    "UPDATE transacao SET conta_id = ?1, descricao = ?2, data_compra = ?3, valor_total = ?4,
+                                          num_parcelas = ?5, categoria_id = ?6
+                     WHERE id = ?7",
+                    params![
+                        conta.id,
+                        descricao,
+                        nova.data_compra,
+                        nova.valor_total,
+                        nova.num_parcelas,
+                        nova.categoria_id,
+                        id
+                    ],
+                )
+                .map_err(|e| traduzir(e, "categoria inexistente", ""))?;
+                tx.execute("DELETE FROM parcela WHERE transacao_id = ?1", [id])?;
+                tx.execute("DELETE FROM divisao WHERE transacao_id = ?1", [id])?;
+                id
+            }
+        };
         for p in &parcelas {
             tx.execute(
                 "INSERT INTO parcela (transacao_id, numero, valor, competencia) VALUES (?1, ?2, ?3, ?4)",
@@ -354,7 +445,7 @@ impl Repositorio {
             .map_err(|e| traduzir(e, "pessoa inexistente na divisão", ""))?;
         }
         tx.commit()?;
-        self.buscar_transacao(id)
+        Ok(id)
     }
 
     fn divisoes_de(&self, transacao_id: i64) -> Resultado<Vec<Divisao>> {
@@ -369,7 +460,8 @@ impl Repositorio {
 
     const SELECT_TRANSACAO: &'static str =
         "SELECT t.id, t.conta_id, c.nome, t.descricao, t.data_compra, t.valor_total,
-                t.num_parcelas, t.categoria_id, cat.nome
+                t.num_parcelas, t.categoria_id, cat.nome, t.origem,
+                (SELECT MIN(p.competencia) FROM parcela p WHERE p.transacao_id = t.id)
          FROM transacao t
          JOIN conta c ON c.id = t.conta_id
          LEFT JOIN categoria cat ON cat.id = t.categoria_id";
@@ -386,6 +478,11 @@ impl Repositorio {
             categoria_id: r.get(7)?,
             categoria_nome: r.get(8)?,
             divisoes: Vec::new(),
+            importada: r.get::<_, String>(9)? == "importado",
+            primeira_fatura: r
+                .get::<_, Option<String>>(10)?
+                .and_then(|c| c.parse().ok())
+                .unwrap_or(Competencia { ano: 2000, mes: 1 }),
         })
     }
 
@@ -521,6 +618,39 @@ impl Repositorio {
         Self::montar_mensalidade(linha)
     }
 
+    /// Edita descrição, valor, conta, dia/início, categoria e dono. O fim (cancelamento) é mantido.
+    pub fn atualizar_mensalidade(&self, id: i64, nova: NovaMensalidade) -> Resultado<Mensalidade> {
+        let atual = self.buscar_mensalidade(id)?;
+        let descricao = texto_obrigatorio(&nova.descricao, "a descrição")?;
+        if nova.valor <= 0 {
+            return invalido("o valor precisa ser maior que zero");
+        }
+        let data = dominio::ler_data(&nova.primeira_cobranca)?;
+        let inicio = Competencia::de_data(data);
+        if atual.fim.is_some_and(|f| f < inicio) {
+            return invalido("a primeira cobrança ficaria depois do cancelamento");
+        }
+        self.buscar_conta(nova.conta_id)?;
+        self.conn
+            .execute(
+                "UPDATE assinatura SET descricao = ?1, valor = ?2, conta_id = ?3, dia_cobranca = ?4,
+                                       categoria_id = ?5, pessoa_id = ?6, inicio = ?7
+                 WHERE id = ?8",
+                params![
+                    descricao,
+                    nova.valor,
+                    nova.conta_id,
+                    data.day(),
+                    nova.categoria_id,
+                    nova.pessoa_id.unwrap_or(PESSOA_EU),
+                    inicio.to_string(),
+                    id
+                ],
+            )
+            .map_err(|e| traduzir(e, "pessoa ou categoria inexistente", ""))?;
+        self.buscar_mensalidade(id)
+    }
+
     /// Ativas primeiro, depois as canceladas.
     pub fn listar_mensalidades(&self) -> Resultado<Vec<Mensalidade>> {
         let sql = format!(
@@ -593,6 +723,23 @@ impl Repositorio {
     // ---------- Entradas ----------
 
     pub fn criar_entrada(&self, nova: NovaEntrada) -> Resultado<Entrada> {
+        let id = self.gravar_entrada(None, &nova, None)?;
+        self.buscar_entrada(id)
+    }
+
+    pub fn atualizar_entrada(&self, id: i64, nova: NovaEntrada) -> Resultado<Entrada> {
+        self.buscar_entrada(id)?;
+        self.gravar_entrada(Some(id), &nova, None)?;
+        self.buscar_entrada(id)
+    }
+
+    pub fn buscar_entrada(&self, id: i64) -> Resultado<Entrada> {
+        self.listar_entradas_onde("e.id = ?1", params![id])?
+            .pop()
+            .ok_or_else(|| Erro::NaoEncontrado(format!("entrada {id}")))
+    }
+
+    fn gravar_entrada(&self, id: Option<i64>, nova: &NovaEntrada, hash: Option<&str>) -> Resultado<i64> {
         let descricao = texto_obrigatorio(&nova.descricao, "a descrição")?;
         if nova.valor <= 0 {
             return invalido("o valor precisa ser maior que zero");
@@ -601,17 +748,30 @@ impl Repositorio {
         if let Some(c) = nova.conta_id {
             self.buscar_conta(c)?;
         }
-        self.conn
-            .execute(
-                "INSERT INTO entrada (conta_id, descricao, data, valor, tipo, pessoa_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![nova.conta_id, descricao, nova.data, nova.valor, nova.tipo.como_texto(), nova.pessoa_id],
-            )
-            .map_err(|e| traduzir(e, "pessoa inexistente", ""))?;
-        let id = self.conn.last_insert_rowid();
-        self.listar_entradas_onde("e.id = ?1", params![id])?
-            .pop()
-            .ok_or_else(|| Erro::NaoEncontrado(format!("entrada {id}")))
+        let tipo = nova.tipo.como_texto();
+        match id {
+            None => {
+                self.conn
+                    .execute(
+                        "INSERT INTO entrada (conta_id, descricao, data, valor, tipo, pessoa_id, hash_importacao)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        params![nova.conta_id, descricao, nova.data, nova.valor, tipo, nova.pessoa_id, hash],
+                    )
+                    .map_err(|e| traduzir(e, "pessoa inexistente", "essa entrada já foi importada"))?;
+                Ok(self.conn.last_insert_rowid())
+            }
+            Some(id) => {
+                self.conn
+                    .execute(
+                        "UPDATE entrada SET conta_id = ?1, descricao = ?2, data = ?3, valor = ?4, tipo = ?5,
+                                            pessoa_id = ?6
+                         WHERE id = ?7",
+                        params![nova.conta_id, descricao, nova.data, nova.valor, tipo, nova.pessoa_id, id],
+                    )
+                    .map_err(|e| traduzir(e, "pessoa inexistente", ""))?;
+                Ok(id)
+            }
+        }
     }
 
     fn listar_entradas_onde(&self, filtro: &str, p: impl rusqlite::Params) -> Resultado<Vec<Entrada>> {
@@ -899,14 +1059,14 @@ impl Repositorio {
 
     // ---------- Configurações e senha ----------
 
-    fn ler_config(&self, chave: &str) -> Resultado<Option<String>> {
+    pub(crate) fn ler_config(&self, chave: &str) -> Resultado<Option<String>> {
         Ok(self
             .conn
             .query_row("SELECT valor FROM config WHERE chave = ?1", [chave], |r| r.get(0))
             .optional()?)
     }
 
-    fn gravar_config(&self, chave: &str, valor: Option<&str>) -> Resultado<()> {
+    pub(crate) fn gravar_config(&self, chave: &str, valor: Option<&str>) -> Resultado<()> {
         match valor {
             Some(v) => self.conn.execute(
                 "INSERT INTO config (chave, valor) VALUES (?1, ?2)
@@ -916,25 +1076,6 @@ impl Repositorio {
             None => self.conn.execute("DELETE FROM config WHERE chave = ?1", [chave])?,
         };
         Ok(())
-    }
-
-    pub fn tem_senha(&self) -> Resultado<bool> {
-        Ok(self.ler_config("senha_hash")?.is_some())
-    }
-
-    pub fn conferir_senha(&self, senha: &str) -> Resultado<bool> {
-        Ok(self.ler_config("senha_hash")?.is_some_and(|h| seguranca::conferir(senha, &h)))
-    }
-
-    /// Define, troca ou remove (`nova = None`) a senha. Se já houver senha, exige a atual.
-    pub fn definir_senha(&self, atual: Option<&str>, nova: Option<&str>) -> Resultado<()> {
-        if self.tem_senha()? && !self.conferir_senha(atual.unwrap_or(""))? {
-            return invalido("senha atual incorreta");
-        }
-        match nova {
-            Some(n) => self.gravar_config("senha_hash", Some(&seguranca::gerar_hash(n)?)),
-            None => self.gravar_config("senha_hash", None),
-        }
     }
 }
 
@@ -968,6 +1109,7 @@ mod testes {
             num_parcelas: parcelas,
             categoria_id: None,
             divisoes: vec![],
+            competencia_fatura: None,
         }
     }
 
@@ -1065,18 +1207,6 @@ mod testes {
         assert_eq!(e.to_string(), "já existe uma categoria com esse nome");
     }
 
-    #[test]
-    fn reabrir_arquivo_nao_repete_migracao() {
-        let dir = std::env::temp_dir().join(format!("financas-teste-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let arq = dir.join("t.db");
-        let _ = std::fs::remove_file(&arq);
-        Repositorio::abrir(&arq).unwrap().criar_pessoa("Mãe").unwrap();
-        let repo = Repositorio::abrir(&arq).unwrap();
-        assert_eq!(repo.listar_pessoas().unwrap().len(), 2);
-        drop(repo);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     fn mensalidade(conta_id: i64, valor: i64, data: &str) -> NovaMensalidade {
         NovaMensalidade {
@@ -1184,19 +1314,6 @@ mod testes {
         assert_eq!(d[1].total, 1500);
     }
 
-    #[test]
-    fn senha_define_troca_e_remove() {
-        let repo = Repositorio::em_memoria().unwrap();
-        assert!(!repo.tem_senha().unwrap());
-        repo.definir_senha(None, Some("1234")).unwrap();
-        assert!(repo.conferir_senha("1234").unwrap());
-        assert!(!repo.conferir_senha("0000").unwrap());
-        assert!(repo.definir_senha(Some("errada"), Some("5678")).is_err());
-        repo.definir_senha(Some("1234"), Some("5678")).unwrap();
-        assert!(repo.conferir_senha("5678").unwrap());
-        repo.definir_senha(Some("5678"), None).unwrap();
-        assert!(!repo.tem_senha().unwrap());
-    }
 
     #[test]
     fn acerto_acumula_entre_meses() {
@@ -1222,5 +1339,71 @@ mod testes {
         assert_eq!((dez[0].gasto, dez[0].pago), (10000, 4000));
         let jan = repo.resumo_mes(c("2027-01")).unwrap().acertos;
         assert_eq!((jan[0].gasto, jan[0].pago), (10000, 4000));
+    }
+
+    #[test]
+    fn editar_compra_refaz_parcelas_e_divisao() {
+        let (mut repo, cartao) = repo_com_cartao();
+        let mae = repo.criar_pessoa("Mãe").unwrap();
+        let t = repo.criar_transacao(compra(cartao.id, "2026-11-01", 30000, 3)).unwrap();
+        assert_eq!(t.primeira_fatura, c("2026-11"));
+        assert!(!t.importada);
+
+        let mut nova = compra(cartao.id, "2026-11-15", 20000, 2);
+        nova.descricao = "Compra corrigida".into();
+        nova.divisoes = vec![Divisao { pessoa_id: mae.id, valor: 20000 }];
+        let e = repo.atualizar_transacao(t.id, nova).unwrap();
+        assert_eq!(e.descricao, "Compra corrigida");
+        assert_eq!(e.primeira_fatura, c("2026-12"));
+        assert_eq!(e.divisoes, vec![Divisao { pessoa_id: mae.id, valor: 20000 }]);
+        let v: Vec<i64> = repo
+            .projetar_faturas(cartao.id, c("2026-11"), 4)
+            .unwrap()
+            .iter()
+            .map(|f| f.valor)
+            .collect();
+        assert_eq!(v, vec![0, 10000, 10000, 0]);
+
+        // Fatura escolhida à mão vence a regra do fechamento.
+        let mut forcada = compra(cartao.id, "2026-11-15", 500, 1);
+        forcada.competencia_fatura = Some(c("2027-03"));
+        let f = repo.criar_transacao(forcada).unwrap();
+        assert_eq!(f.primeira_fatura, c("2027-03"));
+        assert!(repo.atualizar_transacao(9999, compra(cartao.id, "2026-11-01", 1, 1)).is_err());
+    }
+
+    #[test]
+    fn editar_mensalidade_e_entrada() {
+        let (repo, cartao) = repo_com_cartao();
+        let m = repo.criar_mensalidade(mensalidade(cartao.id, 1000, "2026-11-05")).unwrap();
+        let mut nova = mensalidade(cartao.id, 1500, "2026-12-05");
+        nova.descricao = "Claude Max".into();
+        let e = repo.atualizar_mensalidade(m.id, nova).unwrap();
+        assert_eq!((e.descricao.as_str(), e.valor, e.inicio), ("Claude Max", 1500, c("2026-12")));
+
+        let en = repo
+            .criar_entrada(NovaEntrada {
+                conta_id: None,
+                descricao: "Pix".into(),
+                data: "2026-11-02".into(),
+                valor: 100,
+                tipo: TipoEntrada::Pix,
+                pessoa_id: None,
+            })
+            .unwrap();
+        let ed = repo
+            .atualizar_entrada(
+                en.id,
+                NovaEntrada {
+                    conta_id: None,
+                    descricao: "Salário".into(),
+                    data: "2026-11-05".into(),
+                    valor: 300000,
+                    tipo: TipoEntrada::Salario,
+                    pessoa_id: None,
+                },
+            )
+            .unwrap();
+        assert_eq!((ed.descricao.as_str(), ed.valor, ed.tipo), ("Salário", 300000, TipoEntrada::Salario));
     }
 }

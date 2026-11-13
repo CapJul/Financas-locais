@@ -202,3 +202,20 @@ tr.selecionada td { background: var(--fundo); font-weight: 600; }
 .caixa-bloqueio h1 { font-size: 20px; margin: 0; }
 .grafico .vazio { margin-left: 16px; }
 .menu { position: sticky; top: 0; height: 100vh; }
+
+/* ---------- v0.2.0 ---------- */
+.botoes { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.rodape { margin-top: 16px; }
+.formulario.editando { border-color: var(--primaria); }
+.faixa-edicao { font-size: 13px; font-weight: 600; color: var(--primaria); }
+.etiqueta {
+  display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 10px;
+  font-size: 11px; background: var(--fundo); border: 1px solid var(--borda); color: var(--texto-suave);
+}
+button.link.suave { color: var(--texto-suave); }
+.sugestoes { border-color: var(--primaria); }
+.sugestoes .itens li { gap: 12px; }
+.aviso.alerta { border-color: #d69e2e; color: #b7791f; }
+.cartao h4 { margin: 16px 0 6px; font-size: 14px; }
+.linha-form input[type="password"] { min-width: 180px; }
+table + .cartao, table + h3 { margin-top: 20px; }

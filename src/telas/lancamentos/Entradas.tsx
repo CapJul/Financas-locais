@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import type { Base } from "../../App";
 import { api, Entrada, TIPOS_ENTRADA, TipoEntrada } from "../../api";
-import { dataBR, hoje, lerReais, mensagemErro, reais } from "../../util";
+import { dataBR, hoje, lerReais, mensagemErro, paraCampo, reais } from "../../util";
 
 const nomeTipo = (t: TipoEntrada) => TIPOS_ENTRADA.find((x) => x.id === t)?.nome ?? t;
 
@@ -15,6 +15,7 @@ export default function Entradas({ base }: { base: Base }) {
   const [contaId, setContaId] = useState<number | "">("");
   const [pessoaId, setPessoaId] = useState<number | "">("");
 
+  const [editando, setEditando] = useState<Entrada | null>(null);
   const [lista, setLista] = useState<Entrada[]>([]);
   const [erro, setErro] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
@@ -25,25 +26,52 @@ export default function Entradas({ base }: { base: Base }) {
     carregar();
   }, []);
 
+  function limpar() {
+    setEditando(null);
+    setDescricao("");
+    setValor("");
+    setData(hoje());
+    setTipo("pix");
+    setContaId("");
+    setPessoaId("");
+  }
+
+  function editar(en: Entrada) {
+    setEditando(en);
+    setErro(null);
+    setOk(null);
+    setDescricao(en.descricao);
+    setValor(paraCampo(en.valor));
+    setData(en.data);
+    setTipo(en.tipo);
+    setContaId(en.contaId ?? "");
+    setPessoaId(en.pessoaId ?? "");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   async function salvar(e: FormEvent) {
     e.preventDefault();
     setErro(null);
     setOk(null);
     const v = lerReais(valor);
     if (v === null || v <= 0) return setErro("Valor inválido. Ex.: 50,00");
+    const dados = {
+      descricao,
+      valor: v,
+      data,
+      tipo,
+      contaId: contaId === "" ? null : contaId,
+      pessoaId: pessoaId === "" ? null : pessoaId,
+    };
     try {
-      await api.criarEntrada({
-        descricao,
-        valor: v,
-        data,
-        tipo,
-        contaId: contaId === "" ? null : contaId,
-        pessoaId: pessoaId === "" ? null : pessoaId,
-      });
-      setOk(`Entrada de ${reais(v)} registrada.`);
-      setDescricao("");
-      setValor("");
-      setPessoaId("");
+      if (editando) {
+        await api.atualizarEntrada(editando.id, dados);
+        setOk(`Entrada "${descricao}" atualizada.`);
+      } else {
+        await api.criarEntrada(dados);
+        setOk(`Entrada de ${reais(v)} registrada.`);
+      }
+      limpar();
       carregar();
     } catch (e) {
       setErro(mensagemErro(e));
@@ -54,6 +82,7 @@ export default function Entradas({ base }: { base: Base }) {
     if (!window.confirm(`Excluir a entrada "${en.descricao}"?`)) return;
     try {
       await api.excluirEntrada(en.id);
+      if (editando?.id === en.id) limpar();
       carregar();
     } catch (e) {
       setErro(mensagemErro(e));
@@ -64,7 +93,8 @@ export default function Entradas({ base }: { base: Base }) {
 
   return (
     <>
-      <form className="cartao formulario" onSubmit={salvar}>
+      <form className={`cartao formulario ${editando ? "editando" : ""}`} onSubmit={salvar}>
+        {editando && <div className="faixa-edicao">Editando "{editando.descricao}"</div>}
         <div className="grade">
           <label>
             Tipo
@@ -136,9 +166,16 @@ export default function Entradas({ base }: { base: Base }) {
         </p>
         {erro && <div className="aviso erro">{erro}</div>}
         {ok && <div className="aviso ok">{ok}</div>}
-        <button type="submit" className="primario">
-          Registrar entrada
-        </button>
+        <div className="botoes">
+          <button type="submit" className="primario">
+            {editando ? "Salvar alterações" : "Registrar entrada"}
+          </button>
+          {editando && (
+            <button type="button" onClick={limpar}>
+              Cancelar edição
+            </button>
+          )}
+        </div>
       </form>
 
       <h3>Entradas registradas</h3>
@@ -166,7 +203,10 @@ export default function Entradas({ base }: { base: Base }) {
                 <td>{en.contaNome ?? "—"}</td>
                 <td>{en.pessoaNome ?? "—"}</td>
                 <td className="num positivo">+{reais(en.valor)}</td>
-                <td>
+                <td className="acoes">
+                  <button className="link" onClick={() => editar(en)}>
+                    Editar
+                  </button>
                   <button className="perigo" onClick={() => excluir(en)}>
                     Excluir
                   </button>

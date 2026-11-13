@@ -5,6 +5,12 @@ pub enum Erro {
     #[error("{0}")]
     Validacao(String),
 
+    #[error("senha incorreta")]
+    SenhaIncorreta,
+
+    #[error("erro de arquivo: {0}")]
+    Arquivo(#[from] std::io::Error),
+
     #[error("registro não encontrado: {0}")]
     NaoEncontrado(String),
 

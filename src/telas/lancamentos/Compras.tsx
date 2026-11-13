@@ -17,6 +17,9 @@ export default function Compras({ base }: { base: Base }) {
   const [dono, setDono] = useState<string>("eu");
   const dividir = dono === "dividir";
   const [partes, setPartes] = useState<Record<number, string>>({});
+  // Fatura escolhida à mão (AAAA-MM); vazio = automático pelo fechamento.
+  const [fatura, setFatura] = useState("");
+  const [editando, setEditando] = useState<Transacao | null>(null);
 
   const [lista, setLista] = useState<Transacao[]>([]);
   const [erro, setErro] = useState<string | null>(null);
@@ -33,6 +36,43 @@ export default function Compras({ base }: { base: Base }) {
   useEffect(() => {
     if (contaId === "" && contas.length > 0) setContaId(contas[0].id);
   }, [contas, contaId]);
+
+  const contaAtual = contas.find((c) => c.id === contaId);
+
+  function limpar() {
+    setEditando(null);
+    setDescricao("");
+    setValor("");
+    setData(hoje());
+    setParcelas(1);
+    setCategoriaId("");
+    setPartes({});
+    setDono("eu");
+    setFatura("");
+  }
+
+  /** Carrega a compra no formulário para editar. */
+  function editar(t: Transacao) {
+    setEditando(t);
+    setErro(null);
+    setOk(null);
+    setContaId(t.contaId);
+    setDescricao(t.descricao);
+    setData(t.dataCompra);
+    setValor(paraCampo(t.valorTotal));
+    setParcelas(t.numParcelas);
+    setCategoriaId(t.categoriaId ?? "");
+    // Importadas mantêm a fatura em que foram colocadas.
+    setFatura(t.importada ? t.primeiraFatura : "");
+    if (t.divisoes.length === 1) {
+      setDono(t.divisoes[0].pessoaId === 1 ? "eu" : String(t.divisoes[0].pessoaId));
+      setPartes({});
+    } else {
+      setDono("dividir");
+      setPartes(Object.fromEntries(t.divisoes.map((d) => [d.pessoaId, paraCampo(d.valor)])));
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   const total = lerReais(valor);
   const somaPartes = Object.values(partes).reduce((s, t) => s + (lerReais(t) ?? 0), 0);
@@ -69,22 +109,25 @@ export default function Compras({ base }: { base: Base }) {
       }
     }
 
+    const dados = {
+      contaId,
+      descricao,
+      dataCompra: data,
+      valorTotal: total,
+      numParcelas: parcelas,
+      categoriaId: categoriaId === "" ? null : categoriaId,
+      divisoes,
+      competenciaFatura: contaAtual?.tipo === "cartao" && fatura ? fatura : null,
+    };
     try {
-      await api.criarTransacao({
-        contaId,
-        descricao,
-        dataCompra: data,
-        valorTotal: total,
-        numParcelas: parcelas,
-        categoriaId: categoriaId === "" ? null : categoriaId,
-        divisoes,
-      });
-      setOk(`"${descricao}" lançado.`);
-      setDescricao("");
-      setValor("");
-      setParcelas(1);
-      setPartes({});
-      setDono("eu");
+      if (editando) {
+        await api.atualizarTransacao(editando.id, dados);
+        setOk(`"${descricao}" atualizado.`);
+      } else {
+        await api.criarTransacao(dados);
+        setOk(`"${descricao}" lançado.`);
+      }
+      limpar();
       carregar();
     } catch (e) {
       setErro(mensagemErro(e));
@@ -95,6 +138,7 @@ export default function Compras({ base }: { base: Base }) {
     if (!window.confirm(`Excluir "${t.descricao}" e todas as suas parcelas?`)) return;
     try {
       await api.excluirTransacao(t.id);
+      if (editando?.id === t.id) limpar();
       carregar();
     } catch (e) {
       setErro(mensagemErro(e));
@@ -105,7 +149,8 @@ export default function Compras({ base }: { base: Base }) {
 
   return (
     <>
-      <form className="cartao formulario" onSubmit={salvar}>
+      <form className={`cartao formulario ${editando ? "editando" : ""}`} onSubmit={salvar}>
+        {editando && <div className="faixa-edicao">Editando "{editando.descricao}"</div>}
         <div className="grade">
           <label>
             Conta
@@ -162,6 +207,17 @@ export default function Compras({ base }: { base: Base }) {
               ))}
             </select>
           </label>
+          {contaAtual?.tipo === "cartao" && (
+            <label>
+              Fatura (opcional)
+              <input
+                type="month"
+                value={fatura}
+                onChange={(e) => setFatura(e.target.value)}
+                title="Deixe vazio para calcular pelo dia de fechamento"
+              />
+            </label>
+          )}
         </div>
 
         {total !== null && parcelas > 1 && (
@@ -212,9 +268,16 @@ export default function Compras({ base }: { base: Base }) {
 
         {erro && <div className="aviso erro">{erro}</div>}
         {ok && <div className="aviso ok">{ok}</div>}
-        <button type="submit" className="primario" disabled={contas.length === 0}>
-          Lançar
-        </button>
+        <div className="botoes">
+          <button type="submit" className="primario" disabled={contas.length === 0}>
+            {editando ? "Salvar alterações" : "Lançar"}
+          </button>
+          {editando && (
+            <button type="button" onClick={limpar}>
+              Cancelar edição
+            </button>
+          )}
+        </div>
       </form>
 
       <h3>Compras lançadas</h3>
@@ -238,7 +301,10 @@ export default function Compras({ base }: { base: Base }) {
             {lista.map((t) => (
               <tr key={t.id}>
                 <td>{dataBR(t.dataCompra)}</td>
-                <td>{t.descricao}</td>
+                <td>
+                  {t.descricao}
+                  {t.importada && <span className="etiqueta">importada</span>}
+                </td>
                 <td>{t.contaNome}</td>
                 <td>{t.categoriaNome ?? "—"}</td>
                 <td>{t.numParcelas}x</td>
@@ -248,7 +314,10 @@ export default function Compras({ base }: { base: Base }) {
                     : t.divisoes.map((d) => `${nomePessoa(d.pessoaId)}: ${reais(d.valor)}`).join(" · ")}
                 </td>
                 <td className="num">{reais(t.valorTotal)}</td>
-                <td>
+                <td className="acoes">
+                  <button className="link" onClick={() => editar(t)}>
+                    Editar
+                  </button>
                   <button className="perigo" onClick={() => excluir(t)}>
                     Excluir
                   </button>

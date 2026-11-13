@@ -79,6 +79,9 @@ pub struct NovaTransacao {
     /// Vazio = tudo da pessoa "Eu".
     #[serde(default)]
     pub divisoes: Vec<Divisao>,
+    /// Fatura da 1ª parcela escolhida à mão. Vazio = calcula pelo dia de fechamento.
+    #[serde(default)]
+    pub competencia_fatura: Option<Competencia>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +97,10 @@ pub struct Transacao {
     pub categoria_id: Option<i64>,
     pub categoria_nome: Option<String>,
     pub divisoes: Vec<Divisao>,
+    /// Veio de importação de extrato/fatura.
+    pub importada: bool,
+    /// Fatura em que cai a 1ª parcela.
+    pub primeira_fatura: Competencia,
 }
 
 /// Uma parcela que cai numa competência, com o contexto da compra.
