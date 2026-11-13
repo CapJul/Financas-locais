@@ -100,14 +100,12 @@ src/                  Interface React + TypeScript
 .github/workflows/    CI (testes) e Release (instaladores por tag)
 ```
 
-## Gerar instaladores pelo GitHub
+## Publicar uma nova versão
 
-```bash
-git tag v0.1.0
-git push --tags
-```
+1. Atualize a versão (ex.: `0.2.0`) em `src-tauri/tauri.conf.json`, `package.json` e `Cargo.toml`.
+2. Faça commit e push na `main`.
 
-O workflow `Release` compila para Windows e Linux (leva uns 15 minutos) e publica a release com os instaladores. Antes de criar a tag, atualize a versão em `package.json`, `Cargo.toml` e `src-tauri/tauri.conf.json`.
+O workflow `Release` percebe a mudança de versão, compila para Windows e Linux (uns 15 minutos), cria a tag `v0.2.0` e publica a release com os instaladores. Também dá para rodar à mão em **Actions → Release → Run workflow**.
 
 ## Próximas etapas
 

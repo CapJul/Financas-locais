@@ -1,10 +1,17 @@
 name: Release
 
-# Crie uma tag (ex.: git tag v0.1.0 && git push --tags) para gerar
-# os instaladores de Windows e Linux e publicar a release.
+# Gera os instaladores de Windows e Linux e publica a release.
+#
+# Roda sozinho quando a versão em src-tauri/tauri.conf.json muda na main
+# (a tag vX.Y.Z é criada automaticamente a partir dessa versão).
+# Também dá para rodar à mão: Actions → Release → Run workflow.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths:
+      - "src-tauri/tauri.conf.json"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
 
 jobs:
   instaladores:
@@ -38,8 +45,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Finanças Locais ${{ github.ref_name }}"
-          releaseBody: "Baixe o instalador do seu sistema em Assets: Windows (.msi ou -setup.exe) ou Linux (.deb ou .AppImage). Veja o README para instruções."
+          tagName: v__VERSION__
+          releaseName: "Finanças Locais v__VERSION__"
+          releaseBody: "Baixe o instalador do seu sistema em Assets: Windows (-setup.exe ou .msi) ou Linux (.deb ou .AppImage). Veja o README para instruções."
           releaseDraft: false
           prerelease: false
