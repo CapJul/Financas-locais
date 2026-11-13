@@ -13,8 +13,8 @@ import {
   YAxis,
 } from "recharts";
 import type { Base } from "../App";
-import { api, DetalheMes, TotalNomeado } from "../api";
-import { competenciaAtual, mensagemErro, nomeMes, reais } from "../util";
+import { api, DetalheMes, StatusFatura, TotalNomeado } from "../api";
+import { competenciaAtual, dataBR, hoje, mensagemErro, nomeMes, reais } from "../util";
 
 const CORES_ORIGEM: Record<string, string> = {
   "À vista": "#4e79a7",
@@ -47,6 +47,9 @@ export default function Faturas({ base }: { base: Base }) {
   const [contaId, setContaId] = useState<number | "">("");
   const [meses, setMeses] = useState(6);
   const [detalhes, setDetalhes] = useState<DetalheMes[]>([]);
+  const [status, setStatus] = useState<StatusFatura[]>([]);
+  // Fatura sendo marcada como paga: competência + data escolhida.
+  const [pagando, setPagando] = useState<{ competencia: string; data: string } | null>(null);
   const [mesSelecionado, setMesSelecionado] = useState(0);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -54,11 +57,13 @@ export default function Faturas({ base }: { base: Base }) {
     if (contaId === "" && cartoes.length > 0) setContaId(cartoes[0].id);
   }, [cartoes, contaId]);
 
+  const carregarStatus = (id: number) =>
+    api.statusFaturas(id, competenciaAtual(), meses).then(setStatus);
+
   useEffect(() => {
     if (contaId === "") return;
-    api
-      .detalharFaturas(contaId, competenciaAtual(), meses)
-      .then((d) => {
+    Promise.all([api.detalharFaturas(contaId, competenciaAtual(), meses), carregarStatus(contaId)])
+      .then(([d]) => {
         setDetalhes(d);
         // Começa mostrando a primeira fatura que tem algum valor.
         setMesSelecionado(Math.max(0, d.findIndex((x) => x.total > 0)));
@@ -66,6 +71,29 @@ export default function Faturas({ base }: { base: Base }) {
       })
       .catch((e) => setErro(mensagemErro(e)));
   }, [contaId, meses]);
+
+  async function marcarPaga() {
+    if (!pagando || contaId === "") return;
+    try {
+      await api.marcarFaturaPaga(contaId, pagando.competencia, pagando.data, null);
+      setPagando(null);
+      await carregarStatus(contaId);
+    } catch (e) {
+      setErro(mensagemErro(e));
+    }
+  }
+
+  async function desmarcar(competencia: string) {
+    if (contaId === "") return;
+    try {
+      await api.desmarcarFaturaPaga(contaId, competencia);
+      await carregarStatus(contaId);
+    } catch (e) {
+      setErro(mensagemErro(e));
+    }
+  }
+
+  const statusDe = (competencia: string) => status.find((s) => s.competencia === competencia);
 
   const corCategoria = useMemo(() => {
     const mapa = new Map(base.categorias.map((c) => [c.nome, c.cor]));
@@ -82,7 +110,9 @@ export default function Faturas({ base }: { base: Base }) {
 
   const conta = cartoes.find((c) => c.id === contaId);
   const selecionado = detalhes[mesSelecionado];
-  const totalPeriodo = detalhes.reduce((s, d) => s + d.total, 0);
+  // O que ainda falta pagar: faturas do período que não foram marcadas como pagas.
+  const totalPeriodo = detalhes.reduce((s, d) => s + (statusDe(d.competencia)?.paga ? 0 : d.total), 0);
+  const proxima = detalhes.find((d) => !statusDe(d.competencia)?.paga && d.total > 0);
   const maior = detalhes.reduce<DetalheMes | null>((m, d) => (!m || d.total > m.total ? d : m), null);
 
   if (cartoes.length === 0) {
@@ -125,8 +155,16 @@ export default function Faturas({ base }: { base: Base }) {
 
       <div className="tres-colunas">
         <div className="destaque">
-          <span>Próxima fatura ({detalhes[0] ? nomeMes(detalhes[0].competencia) : "—"})</span>
-          <strong>{reais(detalhes[0]?.total ?? 0)}</strong>
+          <span>
+            Próxima a pagar
+            {proxima &&
+              ` (${nomeMes(proxima.competencia)}${
+                statusDe(proxima.competencia)?.vencimento
+                  ? `, vence ${dataBR(statusDe(proxima.competencia)!.vencimento!)}`
+                  : ""
+              })`}
+          </span>
+          <strong>{proxima ? reais(proxima.total) : "nada em aberto"}</strong>
         </div>
         <div className="destaque">
           <span>Maior fatura do período</span>
@@ -135,7 +173,7 @@ export default function Faturas({ base }: { base: Base }) {
           </strong>
         </div>
         <div className="destaque">
-          <span>Total comprometido em {meses} meses</span>
+          <span>Falta pagar em {meses} meses</span>
           <strong>{reais(totalPeriodo)}</strong>
         </div>
       </div>
@@ -196,7 +234,7 @@ export default function Faturas({ base }: { base: Base }) {
       </div>
 
       {selecionado && (
-        <div className="colunas">
+        <div className="colunas larga-direita">
           <div className="cartao grafico">
             <h3>
               Fatura de {nomeMes(selecionado.competencia)}: {reais(selecionado.total)}
@@ -213,6 +251,7 @@ export default function Faturas({ base }: { base: Base }) {
                     innerRadius={60}
                     outerRadius={100}
                     paddingAngle={selecionado.porCategoria.length > 1 ? 2 : 0}
+                    stroke={selecionado.porCategoria.length > 1 ? "#fff" : "none"}
                   >
                     {selecionado.porCategoria.map((t) => (
                       <Cell key={t.nome} fill={corCategoria(t.nome)} />
@@ -230,20 +269,64 @@ export default function Faturas({ base }: { base: Base }) {
               <thead>
                 <tr>
                   <th>Mês</th>
+                  <th>Vence</th>
                   <th className="num">Fatura</th>
+                  <th>Situação</th>
                 </tr>
               </thead>
               <tbody>
-                {detalhes.map((d, i) => (
-                  <tr
-                    key={d.competencia}
-                    className={i === mesSelecionado ? "selecionada" : "clicavel"}
-                    onClick={() => setMesSelecionado(i)}
-                  >
-                    <td>{nomeMes(d.competencia)}</td>
-                    <td className="num">{reais(d.total)}</td>
-                  </tr>
-                ))}
+                {detalhes.map((d, i) => {
+                  const st = statusDe(d.competencia);
+                  return (
+                    <tr
+                      key={d.competencia}
+                      className={i === mesSelecionado ? "selecionada" : "clicavel"}
+                      onClick={() => setMesSelecionado(i)}
+                    >
+                      <td>{nomeMes(d.competencia)}</td>
+                      <td className="pequeno">{st?.vencimento ? dataBR(st.vencimento).slice(0, 5) : "—"}</td>
+                      <td className="num">{reais(d.total)}</td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        {st?.paga ? (
+                          <span className="positivo">
+                            Paga em {dataBR(st.paga.data).slice(0, 5)}{" "}
+                            <button className="link suave" onClick={() => desmarcar(d.competencia)}>
+                              desfazer
+                            </button>
+                          </span>
+                        ) : pagando?.competencia === d.competencia ? (
+                          <span className="cancelar-inline">
+                            <input
+                              type="date"
+                              value={pagando.data}
+                              onChange={(e) => setPagando({ ...pagando, data: e.target.value })}
+                            />
+                            <button className="link" onClick={marcarPaga}>
+                              OK
+                            </button>
+                            <button className="link suave" onClick={() => setPagando(null)}>
+                              Voltar
+                            </button>
+                          </span>
+                        ) : (
+                          <>
+                            {st?.atrasada && <span className="negativo">Atrasada · </span>}
+                            {d.total > 0 ? (
+                              <button
+                                className="link"
+                                onClick={() => setPagando({ competencia: d.competencia, data: hoje() })}
+                              >
+                                Marcar como paga
+                              </button>
+                            ) : (
+                              <span className="pequeno">—</span>
+                            )}
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

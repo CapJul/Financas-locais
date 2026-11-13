@@ -219,3 +219,40 @@ button.link.suave { color: var(--texto-suave); }
 .cartao h4 { margin: 16px 0 6px; font-size: 14px; }
 .linha-form input[type="password"] { min-width: 180px; }
 table + .cartao, table + h3 { margin-top: 20px; }
+.colunas.larga-direita { grid-template-columns: 1fr 1.5fr; }
+
+/* ---------- Relatórios ---------- */
+.relatorio { background: var(--superficie); border: 1px solid var(--borda); border-radius: 10px; padding: 28px 32px; margin-top: 16px; }
+.relatorio h1 { font-size: 22px; margin: 0 0 4px; }
+.relatorio h2 { font-size: 18px; margin: 24px 0 12px; }
+.relatorio h4 { margin: 16px 0 6px; font-size: 14px; }
+.relatorio-topo { border-bottom: 2px solid var(--primaria); padding-bottom: 12px; margin-bottom: 8px; }
+.bloco-relatorio { margin-top: 20px; break-inside: avoid; }
+.lado-a-lado { display: flex; gap: 24px; align-items: center; }
+.lado-a-lado table { flex: 1; }
+.relatorio-arquivo { max-width: 820px; margin: 24px auto; font-family: system-ui, "Segoe UI", Roboto, sans-serif; }
+
+/* Tema claro forçado: impressão e relatório salvo em HTML. */
+.tema-claro, .tema-claro * {
+  --fundo: #f5f6f8; --superficie: #ffffff; --borda: #dde1e6;
+  --texto: #1f2933; --texto-suave: #616e7c; --primaria: #2f6fde;
+}
+.tema-claro { background: #f5f6f8; color: #1f2933; }
+
+@media print {
+  :root {
+    --fundo: #ffffff; --superficie: #ffffff; --borda: #cfd5dc;
+    --texto: #111111; --texto-suave: #555555; --primaria: #2f6fde;
+    background: #ffffff; color: #111111;
+  }
+  body { background: #ffffff; }
+  .nao-imprimir { display: none !important; }
+  .app { display: block; }
+  .conteudo { padding: 0; max-width: none; }
+  .relatorio { border: none; padding: 0; margin: 0; }
+  .quebra-antes { break-before: page; }
+  table { break-inside: auto; }
+  tr { break-inside: avoid; }
+  .destaque, .cartao { break-inside: avoid; }
+}
+input[type="month"] { min-width: 160px; }

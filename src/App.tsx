@@ -9,6 +9,7 @@ import Cadastros from "./telas/Cadastros";
 import Bloqueio from "./telas/Bloqueio";
 import Importar from "./telas/Importar";
 import Seguros from "./telas/Seguros";
+import Relatorios from "./telas/Relatorios";
 
 /** Dados de cadastro e estado que várias telas usam. */
 export interface Base {
@@ -27,6 +28,7 @@ const ABAS = [
   { id: "faturas", nome: "Faturas" },
   { id: "simulador", nome: "Simulador" },
   { id: "seguros", nome: "Seguros e veículos" },
+  { id: "relatorios", nome: "Relatórios" },
   { id: "cadastros", nome: "Cadastros" },
 ] as const;
 
@@ -95,7 +97,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <nav className="menu">
+      <nav className="menu nao-imprimir">
         <h1>Finanças Locais</h1>
         {ABAS.map((a) => (
           <button
@@ -127,6 +129,7 @@ export default function App() {
         {aba === "lancamentos" && <Lancamentos base={base} />}
         {aba === "importar" && <Importar base={base} />}
         {aba === "seguros" && <Seguros base={base} />}
+        {aba === "relatorios" && <Relatorios base={base} />}
         {aba === "faturas" && <Faturas base={base} />}
         {aba === "simulador" && <Simulador base={base} />}
         {aba === "cadastros" && <Cadastros base={base} />}

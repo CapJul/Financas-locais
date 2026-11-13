@@ -295,6 +295,29 @@ export interface Seguro {
   valorMensal: number | null;
 }
 
+export interface PagamentoFatura {
+  data: string;
+  valor: number;
+}
+
+export interface StatusFatura {
+  contaId: number;
+  contaNome: string;
+  competencia: string;
+  valor: number;
+  vencimento: string | null;
+  paga: PagamentoFatura | null;
+  atrasada: boolean;
+}
+
+export interface ComparacaoGeral {
+  competencia: string;
+  porConta: TotalNomeado[];
+  atual: number;
+  simulado: number;
+  pagas: string[];
+}
+
 export interface StatusBloqueio {
   temSenha: boolean;
   desbloqueado: boolean;
@@ -354,6 +377,17 @@ export const api = {
   simularCompra: (simulacao: SimulacaoCompra, inicio: string, meses: number) =>
     invoke<ComparacaoMes[]>("simular_compra", { simulacao, inicio, meses }),
   resumoMes: (competencia: string) => invoke<ResumoMes>("resumo_mes", { competencia }),
+  simularCompraTodas: (simulacao: SimulacaoCompra, inicio: string, meses: number) =>
+    invoke<ComparacaoGeral[]>("simular_compra_todas", { simulacao, inicio, meses }),
+  statusFaturas: (contaId: number, inicio: string, meses: number) =>
+    invoke<StatusFatura[]>("status_faturas", { contaId, inicio, meses }),
+  faturasDoMes: (competencia: string) => invoke<StatusFatura[]>("faturas_do_mes", { competencia }),
+  marcarFaturaPaga: (contaId: number, competencia: string, data: string, valor: number | null) =>
+    invoke<StatusFatura>("marcar_fatura_paga", { contaId, competencia, data, valor }),
+  desmarcarFaturaPaga: (contaId: number, competencia: string) =>
+    invoke<void>("desmarcar_fatura_paga", { contaId, competencia }),
+  salvarTexto: (caminho: string, conteudo: string) => invoke<void>("salvar_texto", { caminho, conteudo }),
+  imprimir: () => invoke<void>("imprimir"),
 
   previaImportacao: (
     caminho: string,

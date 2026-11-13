@@ -17,7 +17,7 @@ Os dados ficam só na sua máquina, num arquivo SQLite.
 
 **Aviso do Windows:** como o instalador ainda não tem assinatura digital paga, o Windows pode mostrar "O Windows protegeu o computador". Clique em **Mais informações → Executar assim mesmo**. O código-fonte completo está neste repositório.
 
-## O que já funciona (v0.2)
+## O que já funciona (v0.3)
 
 - **Cadastros:** contas correntes, cartões (com dia de fechamento e vencimento), pessoas e categorias.
 - **Lançamentos**, em três tipos, todos editáveis:
@@ -27,8 +27,9 @@ Os dados ficam só na sua máquina, num arquivo SQLite.
 - **Importar extrato ou fatura** em OFX ou CSV (Banco do Brasil, PicPay e outros bancos com colunas de data, descrição e valor). Mostra uma prévia, sugere a categoria pelo histórico, desmarca linhas de saldo e pagamento de fatura, e não importa a mesma linha duas vezes.
 - **Sugestão de mensalidades:** cobranças que se repetem em 3 meses ou mais aparecem para você cadastrar com um clique.
 - **Resumo do mês:** entradas, gastos e saldo; gastos por categoria, pessoa e tipo; acerto acumulado com cada pessoa; aviso de seguro perto de vencer.
-- **Faturas:** próximas faturas de cada cartão com gráficos por tipo de gasto, categoria e pessoa.
-- **Simulador:** "se eu comprar X por Y em Z vezes", mostra as faturas antes e depois, sem salvar nada.
+- **Faturas:** próximas faturas de cada cartão com gráficos por tipo de gasto, categoria e pessoa, vencimento de cada uma e marcação de **fatura paga** (com aviso de atrasada).
+- **Simulador:** "se eu comprar X por Y em Z vezes", mostra a soma das faturas de **todos os cartões** antes e depois e quanto você vai pagar a mais, sem salvar nada.
+- **Relatórios:** escolha o período e exporte em **PDF** (pela impressão do sistema), **página HTML** ou **planilha CSV** para o Excel, com gráficos de entradas × gastos, categorias, pessoas, próximas faturas, mensalidades, seguros e a lista de lançamentos.
 - **Seguros e veículos:** seguro do carro, de saúde, de vida etc., com o pagamento mensal entrando nas faturas e aviso quando a vigência está acabando.
 - **Senha com criptografia:** com senha, o arquivo dos dados é criptografado (SQLCipher, AES-256).
 - **Backup:** manual, restauração e backup automático numa pasta do OneDrive ou Google Drive.

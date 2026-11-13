@@ -118,6 +118,16 @@ pub(crate) const MIGRACOES: &[&str] = &[
         mensalidade_id INTEGER REFERENCES assinatura(id) ON DELETE SET NULL
     );
     "#,
+    // v4 — faturas pagas
+    r#"
+    CREATE TABLE fatura_paga (
+        conta_id       INTEGER NOT NULL REFERENCES conta(id) ON DELETE CASCADE,
+        competencia    TEXT NOT NULL,
+        data_pagamento TEXT NOT NULL,
+        valor          INTEGER NOT NULL CHECK (valor >= 0),
+        PRIMARY KEY (conta_id, competencia)
+    );
+    "#,
 ];
 
 /// Mensalidade já com o deslocamento de fatura calculado.
@@ -154,11 +164,13 @@ impl Somador {
 }
 
 mod arquivo;
+mod faturas;
 mod importacao;
 mod seguros;
 mod sugestoes;
 
 pub use arquivo::{InfoBackup, SituacaoArquivo};
+pub use faturas::{vencimento_da_fatura, ComparacaoGeral, PagamentoFatura, StatusFatura};
 pub use importacao::{ItemImportacao, LinhaPrevia, PreviaImportacao, ResultadoImportacao, TipoLinha};
 pub use seguros::{NovoSeguro, NovoVeiculo, PagamentoSeguro, Seguro, TipoSeguro, Veiculo};
 pub use sugestoes::SugestaoMensalidade;

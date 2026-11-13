@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, LancamentoDoMes, ResumoMes, Seguro } from "../api";
+import { api, LancamentoDoMes, ResumoMes, Seguro, StatusFatura } from "../api";
 import { avisoVencimento } from "./Seguros";
 import { competenciaAtual, dataBR, mensagemErro, nomeMes, reais, somarMeses } from "../util";
 
@@ -13,13 +13,15 @@ export default function Resumo({ irPara }: { irPara: (aba: "seguros") => void })
   const [competencia, setCompetencia] = useState(competenciaAtual());
   const [resumo, setResumo] = useState<ResumoMes | null>(null);
   const [lancamentos, setLancamentos] = useState<LancamentoDoMes[]>([]);
+  const [faturas, setFaturas] = useState<StatusFatura[]>([]);
   const [erro, setErro] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.resumoMes(competencia), api.lancamentosDoMes(competencia)])
-      .then(([r, l]) => {
+    Promise.all([api.resumoMes(competencia), api.lancamentosDoMes(competencia), api.faturasDoMes(competencia)])
+      .then(([r, l, f]) => {
         setResumo(r);
         setLancamentos(l);
+        setFaturas(f);
         setErro(null);
       })
       .catch((e) => setErro(mensagemErro(e)));
@@ -66,6 +68,30 @@ export default function Resumo({ irPara }: { irPara: (aba: "seguros") => void })
           <p className="dica">
             Gastos contam pelo mês da fatura; entradas, pela data em que o dinheiro entrou.
           </p>
+          {faturas.some((f) => f.valor > 0) && (
+            <div className="cartao">
+              <h3>Faturas de {nomeMes(competencia)}</h3>
+              <ul className="itens">
+                {faturas
+                  .filter((f) => f.valor > 0)
+                  .map((f) => (
+                    <li key={f.contaId}>
+                      <span>
+                        <strong>{f.contaNome}</strong> · {reais(f.valor)}
+                        {f.vencimento && <span className="pequeno"> · vence {dataBR(f.vencimento)}</span>}
+                      </span>
+                      {f.paga ? (
+                        <span className="positivo">Paga em {dataBR(f.paga.data)}</span>
+                      ) : f.atrasada ? (
+                        <span className="negativo">Atrasada</span>
+                      ) : (
+                        <span className="pequeno">Em aberto</span>
+                      )}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
           <div className="tres-colunas">
             <TabelaTotais titulo="Por categoria" itens={resumo.porCategoria} total={resumo.total} />
             <TabelaTotais titulo="Por pessoa" itens={resumo.porPessoa} total={resumo.total} />

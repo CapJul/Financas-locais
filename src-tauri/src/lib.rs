@@ -308,6 +308,65 @@ fn resumo_mes(estado: State<Estado>, competencia: String) -> Resposta<ResumoMes>
     com_repo(&estado, |r| r.resumo_mes(c))
 }
 
+#[tauri::command]
+fn simular_compra_todas(
+    estado: State<Estado>,
+    simulacao: SimulacaoCompra,
+    inicio: String,
+    meses: u32,
+) -> Resposta<Vec<ComparacaoGeral>> {
+    let inicio = competencia(&inicio)?;
+    com_repo(&estado, |r| r.simular_compra_todas(&simulacao, inicio, meses))
+}
+
+// ---------- Faturas pagas ----------
+
+#[tauri::command]
+fn status_faturas(estado: State<Estado>, conta_id: i64, inicio: String, meses: u32) -> Resposta<Vec<StatusFatura>> {
+    let inicio = competencia(&inicio)?;
+    com_repo(&estado, |r| r.status_faturas(conta_id, inicio, meses))
+}
+
+#[tauri::command]
+fn faturas_do_mes(estado: State<Estado>, competencia: String) -> Resposta<Vec<StatusFatura>> {
+    let c = self::competencia(&competencia)?;
+    com_repo(&estado, |r| r.faturas_do_mes(c))
+}
+
+#[tauri::command]
+fn marcar_fatura_paga(
+    estado: State<Estado>,
+    conta_id: i64,
+    competencia: String,
+    data: String,
+    valor: Option<i64>,
+) -> Resposta<StatusFatura> {
+    let c = self::competencia(&competencia)?;
+    com_repo(&estado, |r| r.marcar_fatura_paga(conta_id, c, &data, valor))
+}
+
+#[tauri::command]
+fn desmarcar_fatura_paga(estado: State<Estado>, conta_id: i64, competencia: String) -> Resposta<()> {
+    let c = self::competencia(&competencia)?;
+    com_repo(&estado, |r| r.desmarcar_fatura_paga(conta_id, c))
+}
+
+// ---------- Relatórios ----------
+
+/// Grava um arquivo de texto escolhido pelo usuário (relatório HTML ou CSV).
+#[tauri::command(async)]
+fn salvar_texto(estado: State<Estado>, caminho: String, conteudo: String) -> Resposta<()> {
+    // Só com o app desbloqueado: o conteúdo vem dos dados do usuário.
+    com_repo(&estado, |_| Ok(()))?;
+    std::fs::write(&caminho, conteudo).map_err(|e| format!("não consegui salvar o arquivo: {e}"))
+}
+
+/// Abre a janela de impressão do sistema (dá para escolher "Salvar como PDF").
+#[tauri::command]
+fn imprimir(janela: tauri::WebviewWindow) -> Resposta<()> {
+    janela.print().map_err(|e| e.to_string())
+}
+
 // ---------- Backup ----------
 
 #[tauri::command]
@@ -441,6 +500,13 @@ pub fn run() {
             projetar_faturas,
             detalhar_faturas,
             simular_compra,
+            simular_compra_todas,
+            status_faturas,
+            faturas_do_mes,
+            marcar_fatura_paga,
+            desmarcar_fatura_paga,
+            salvar_texto,
+            imprimir,
             resumo_mes,
             info_backup,
             fazer_backup,
