@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import type { Base } from "../../App";
-import { api, Mensalidade, SugestaoMensalidade } from "../../api";
+import { api, Divisao, Mensalidade, SugestaoMensalidade } from "../../api";
 import { competenciaAtual, dataBR, hoje, lerReais, mensagemErro, nomeMes, paraCampo, reais } from "../../util";
 
 /** Gastos que se repetem todo mês (ex.: assinatura do Claude, Spotify, academia). */
@@ -11,7 +11,10 @@ export default function Mensalidades({ base }: { base: Base }) {
   const [valor, setValor] = useState("");
   const [primeira, setPrimeira] = useState(hoje());
   const [categoriaId, setCategoriaId] = useState<number | "">("");
-  const [pessoaId, setPessoaId] = useState<number>(1);
+  // id da pessoa dona (como texto) ou "dividir"
+  const [dono, setDono] = useState<string>("1");
+  const [partes, setPartes] = useState<Record<number, string>>({});
+  const dividir = dono === "dividir";
 
   const [editando, setEditando] = useState<Mensalidade | null>(null);
   const [sugestoes, setSugestoes] = useState<SugestaoMensalidade[]>([]);
@@ -33,7 +36,8 @@ export default function Mensalidades({ base }: { base: Base }) {
     setValor("");
     setPrimeira(hoje());
     setCategoriaId("");
-    setPessoaId(1);
+    setDono("1");
+    setPartes({});
   }
 
   function editar(m: Mensalidade) {
@@ -46,7 +50,13 @@ export default function Mensalidades({ base }: { base: Base }) {
     const dia = String(Math.min(m.diaCobranca, 28)).padStart(2, "0");
     setPrimeira(`${m.inicio}-${dia}`);
     setCategoriaId(m.categoriaId ?? "");
-    setPessoaId(m.pessoaId);
+    if (m.divisoes.length > 0) {
+      setDono("dividir");
+      setPartes(Object.fromEntries(m.divisoes.map((d) => [d.pessoaId, paraCampo(d.valor)])));
+    } else {
+      setDono(String(m.pessoaId));
+      setPartes({});
+    }
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -72,6 +82,21 @@ export default function Mensalidades({ base }: { base: Base }) {
     }
   }, [contas, contaId]);
 
+  const totalMensal = lerReais(valor) ?? 0;
+  const falta = totalMensal - Object.values(partes).reduce((s, t) => s + (lerReais(t) ?? 0), 0);
+
+  /** Divide igualmente entre quem já tem valor preenchido (ou entre todos, se ninguém tiver). */
+  function dividirIgualmente() {
+    if (!totalMensal || pessoas.length === 0) return;
+    const preenchidas = pessoas.filter((p) => (partes[p.id] ?? "").trim() !== "");
+    const alvo = preenchidas.length >= 2 ? preenchidas : pessoas;
+    const base = Math.floor(totalMensal / alvo.length);
+    const sobra = totalMensal - base * alvo.length;
+    const novo: Record<number, string> = {};
+    alvo.forEach((p, i) => (novo[p.id] = paraCampo(base + (i === 0 ? sobra : 0))));
+    setPartes(novo);
+  }
+
   async function salvar(e: FormEvent) {
     e.preventDefault();
     setErro(null);
@@ -79,13 +104,25 @@ export default function Mensalidades({ base }: { base: Base }) {
     const v = lerReais(valor);
     if (contaId === "") return setErro("Escolha uma conta.");
     if (v === null || v <= 0) return setErro("Valor inválido. Ex.: 110,00");
+    const divisoes: Divisao[] = [];
+    if (dividir) {
+      for (const p of pessoas) {
+        const t = (partes[p.id] ?? "").trim();
+        if (!t) continue;
+        const parte = lerReais(t);
+        if (parte === null) return setErro(`Valor inválido para ${p.nome}.`);
+        if (parte > 0) divisoes.push({ pessoaId: p.id, valor: parte });
+      }
+      if (divisoes.length === 0) return setErro("Informe quanto cada pessoa paga.");
+    }
     const dados = {
       contaId,
       descricao,
       valor: v,
       primeiraCobranca: primeira,
       categoriaId: categoriaId === "" ? null : categoriaId,
-      pessoaId,
+      pessoaId: dividir ? null : Number(dono),
+      divisoes,
     };
     try {
       if (editando) {
@@ -122,6 +159,7 @@ export default function Mensalidades({ base }: { base: Base }) {
     acao(() => api.cancelarMensalidade(id, mes));
   }
 
+  const nomePessoa = (id: number) => pessoas.find((p) => p.id === id)?.nome ?? `#${id}`;
   const ativas = lista.filter((m) => !m.fim);
   const totalAtivas = ativas.reduce((s, m) => s + m.valor, 0);
 
@@ -210,15 +248,43 @@ export default function Mensalidades({ base }: { base: Base }) {
           </label>
           <label>
             De quem é
-            <select value={pessoaId} onChange={(e) => setPessoaId(Number(e.target.value))}>
+            <select value={dono} onChange={(e) => setDono(e.target.value)}>
               {pessoas.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.id === 1 ? "Minha" : p.nome}
+                  {p.id === 1 ? "Minha" : `Só de ${p.nome}`}
                 </option>
               ))}
+              <option value="dividir">Dividir entre pessoas…</option>
             </select>
           </label>
         </div>
+
+        {dividir && (
+          <div className="divisao">
+            {pessoas.map((p) => (
+              <label key={p.id}>
+                {p.id === 1 ? "Eu" : p.nome}
+                <input
+                  value={partes[p.id] ?? ""}
+                  onChange={(e) => setPartes({ ...partes, [p.id]: e.target.value })}
+                  placeholder="0,00"
+                  inputMode="decimal"
+                />
+              </label>
+            ))}
+            <div className="acoes-divisao">
+              <button type="button" onClick={dividirIgualmente}>
+                Dividir igualmente
+              </button>
+              <span className={falta === 0 ? "certo" : "falta"}>
+                {falta === 0 ? "Divisão fecha com o valor mensal" : `Falta distribuir ${reais(falta)}`}
+              </span>
+              <span className="pequeno">
+                Dica: coloque qualquer valor em quem participa (ex.: Eu e Mãe) e clique em dividir igualmente.
+              </span>
+            </div>
+          </div>
+        )}
         <p className="dica">
           A cobrança se repete todo mês no mesmo dia, até você cancelar. No cartão, cobrança no
           dia do fechamento ou depois entra na fatura seguinte.
@@ -268,7 +334,15 @@ export default function Mensalidades({ base }: { base: Base }) {
                 <td>{m.contaNome}</td>
                 <td>{m.diaCobranca}</td>
                 <td>{m.categoriaNome ?? "—"}</td>
-                <td>{m.pessoaNome}</td>
+                <td className={m.divisoes.length > 0 ? "pequeno" : ""}>
+                  {m.divisoes.length > 0
+                    ? m.divisoes.map((d) => (
+                        <div key={d.pessoaId} className="sem-quebra">
+                          {nomePessoa(d.pessoaId)}: {reais(d.valor)}
+                        </div>
+                      ))
+                    : m.pessoaNome}
+                </td>
                 <td className="pequeno">
                   desde {nomeMes(m.inicio)}
                   {m.fim ? ` até ${nomeMes(m.fim)}` : " · ativa"}

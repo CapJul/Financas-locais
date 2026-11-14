@@ -162,6 +162,9 @@ pub struct NovaMensalidade {
     pub categoria_id: Option<i64>,
     /// De quem é a mensalidade; vazio = "Eu".
     pub pessoa_id: Option<i64>,
+    /// Divisão entre pessoas (ex.: Claude meio a meio com a mãe). Vazia = toda de `pessoa_id`.
+    #[serde(default)]
+    pub divisoes: Vec<Divisao>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +183,8 @@ pub struct Mensalidade {
     pub inicio: Competencia,
     /// Último mês cobrado; vazio = ativa.
     pub fim: Option<Competencia>,
+    /// Divisão entre pessoas; vazia = toda de `pessoa_id`.
+    pub divisoes: Vec<Divisao>,
 }
 
 // ---------- Entradas (saldo positivo: pix, salário, pagamentos recebidos) ----------

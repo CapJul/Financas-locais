@@ -261,6 +261,7 @@ impl Repositorio {
             primeira_cobranca: p.primeira_cobranca.clone(),
             categoria_id: p.categoria_id,
             pessoa_id: s.pessoa_id,
+            divisoes: vec![],
         })?;
         Ok(m.id)
     }

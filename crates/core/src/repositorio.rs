@@ -128,6 +128,16 @@ pub(crate) const MIGRACOES: &[&str] = &[
         PRIMARY KEY (conta_id, competencia)
     );
     "#,
+    // v5 — mensalidade dividida entre pessoas
+    r#"
+    CREATE TABLE divisao_mensalidade (
+        id            INTEGER PRIMARY KEY,
+        assinatura_id INTEGER NOT NULL REFERENCES assinatura(id) ON DELETE CASCADE,
+        pessoa_id     INTEGER NOT NULL REFERENCES pessoa(id) ON DELETE RESTRICT,
+        valor         INTEGER NOT NULL CHECK (valor > 0),
+        UNIQUE (assinatura_id, pessoa_id)
+    );
+    "#,
 ];
 
 /// Mensalidade já com o deslocamento de fatura calculado.
@@ -135,7 +145,8 @@ struct MensalidadeInterna {
     conta_id: i64,
     valor: i64,
     categoria: String,
-    pessoa_id: i64,
+    /// Quanto cada pessoa paga por mês (pessoa_id, valor). Soma = `valor`.
+    partes: Vec<(i64, i64)>,
     inicio: Competencia,
     fim: Option<Competencia>,
     deslocamento: i32,
@@ -564,6 +575,7 @@ impl Repositorio {
         }
         let data = dominio::ler_data(&nova.primeira_cobranca)?;
         self.buscar_conta(nova.conta_id)?;
+        Self::validar_divisoes_mensalidade(&nova)?;
         let pessoa = nova.pessoa_id.unwrap_or(PESSOA_EU);
         self.conn
             .execute(
@@ -580,7 +592,40 @@ impl Repositorio {
                 ],
             )
             .map_err(|e| traduzir(e, "pessoa ou categoria inexistente", ""))?;
-        self.buscar_mensalidade(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+        self.gravar_divisoes_mensalidade(id, &nova.divisoes)?;
+        self.buscar_mensalidade(id)
+    }
+
+    /// Divisão da mensalidade entre pessoas: precisa somar o valor mensal.
+    /// Vazia = a mensalidade é toda de `pessoa_id` (ou de "Eu").
+    fn validar_divisoes_mensalidade(nova: &NovaMensalidade) -> Resultado<()> {
+        if nova.divisoes.is_empty() {
+            return Ok(());
+        }
+        let pares: Vec<(i64, i64)> = nova.divisoes.iter().map(|d| (d.pessoa_id, d.valor)).collect();
+        dominio::validar_divisoes(nova.valor, &pares)
+    }
+
+    fn gravar_divisoes_mensalidade(&self, id: i64, divisoes: &[Divisao]) -> Resultado<()> {
+        self.conn.execute("DELETE FROM divisao_mensalidade WHERE assinatura_id = ?1", [id])?;
+        for d in divisoes {
+            self.conn
+                .execute(
+                    "INSERT INTO divisao_mensalidade (assinatura_id, pessoa_id, valor) VALUES (?1, ?2, ?3)",
+                    params![id, d.pessoa_id, d.valor],
+                )
+                .map_err(|e| traduzir(e, "pessoa inexistente na divisão", ""))?;
+        }
+        Ok(())
+    }
+
+    fn divisoes_da_mensalidade(&self, id: i64) -> Resultado<Vec<Divisao>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT pessoa_id, valor FROM divisao_mensalidade WHERE assinatura_id = ?1 ORDER BY id")?;
+        let linhas = st.query_map([id], |r| Ok(Divisao { pessoa_id: r.get(0)?, valor: r.get(1)? }))?;
+        Ok(linhas.collect::<Result<_, _>>()?)
     }
 
     const SELECT_MENSALIDADE: &'static str =
@@ -606,6 +651,7 @@ impl Repositorio {
                 pessoa_nome: r.get(9)?,
                 inicio: Competencia { ano: 2000, mes: 1 },
                 fim: None,
+                divisoes: Vec::new(),
             },
             r.get(10)?,
             r.get(11)?,
@@ -613,10 +659,12 @@ impl Repositorio {
     }
 
     fn montar_mensalidade(
+        &self,
         (mut m, inicio, fim): (Mensalidade, String, Option<String>),
     ) -> Resultado<Mensalidade> {
         m.inicio = inicio.parse()?;
         m.fim = fim.map(|f| f.parse()).transpose()?;
+        m.divisoes = self.divisoes_da_mensalidade(m.id)?;
         Ok(m)
     }
 
@@ -627,7 +675,7 @@ impl Repositorio {
             .query_row(&sql, [id], Self::ler_mensalidade)
             .optional()?
             .ok_or_else(|| Erro::NaoEncontrado(format!("mensalidade {id}")))?;
-        Self::montar_mensalidade(linha)
+        self.montar_mensalidade(linha)
     }
 
     /// Edita descrição, valor, conta, dia/início, categoria e dono. O fim (cancelamento) é mantido.
@@ -643,6 +691,7 @@ impl Repositorio {
             return invalido("a primeira cobrança ficaria depois do cancelamento");
         }
         self.buscar_conta(nova.conta_id)?;
+        Self::validar_divisoes_mensalidade(&nova)?;
         self.conn
             .execute(
                 "UPDATE assinatura SET descricao = ?1, valor = ?2, conta_id = ?3, dia_cobranca = ?4,
@@ -660,6 +709,7 @@ impl Repositorio {
                 ],
             )
             .map_err(|e| traduzir(e, "pessoa ou categoria inexistente", ""))?;
+        self.gravar_divisoes_mensalidade(id, &nova.divisoes)?;
         self.buscar_mensalidade(id)
     }
 
@@ -671,7 +721,7 @@ impl Repositorio {
         );
         let mut st = self.conn.prepare(&sql)?;
         let linhas: Vec<_> = st.query_map([], Self::ler_mensalidade)?.collect::<Result<_, _>>()?;
-        linhas.into_iter().map(Self::montar_mensalidade).collect()
+        linhas.into_iter().map(|l| self.montar_mensalidade(l)).collect()
     }
 
     /// Encerra a mensalidade: `ultimo_mes` é o último mês em que ela foi cobrada.
@@ -704,26 +754,42 @@ impl Repositorio {
     /// Todas as mensalidades, com o deslocamento de fatura de cada conta já calculado.
     fn mensalidades_internas(&self) -> Resultado<Vec<MensalidadeInterna>> {
         let mut st = self.conn.prepare(
-            "SELECT a.conta_id, a.valor, COALESCE(cat.nome, 'Sem categoria'), COALESCE(a.pessoa_id, 1),
+            "SELECT a.id, a.conta_id, a.valor, COALESCE(cat.nome, 'Sem categoria'), COALESCE(a.pessoa_id, 1),
                     a.inicio, a.fim, a.dia_cobranca, c.dia_fechamento
              FROM assinatura a
              JOIN conta c ON c.id = a.conta_id
              LEFT JOIN categoria cat ON cat.id = a.categoria_id",
         )?;
-        type Linha = (i64, i64, String, i64, String, Option<String>, u32, Option<u32>);
+        type Linha = (i64, i64, i64, String, i64, String, Option<String>, u32, Option<u32>);
         let linhas: Vec<Linha> = st
             .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
             })?
             .collect::<Result<_, _>>()?;
         linhas
             .into_iter()
-            .map(|(conta_id, valor, categoria, pessoa_id, inicio, fim, dia, fechamento)| {
+            .map(|(id, conta_id, valor, categoria, pessoa_id, inicio, fim, dia, fechamento)| {
+                let divisoes = self.divisoes_da_mensalidade(id)?;
+                let partes = if divisoes.is_empty() {
+                    vec![(pessoa_id, valor)]
+                } else {
+                    divisoes.iter().map(|d| (d.pessoa_id, d.valor)).collect()
+                };
                 Ok(MensalidadeInterna {
                     conta_id,
                     valor,
                     categoria,
-                    pessoa_id,
+                    partes,
                     inicio: inicio.parse()?,
                     fim: fim.map(|f| f.parse()).transpose()?,
                     deslocamento: dominio::deslocamento_cobranca(dia, fechamento),
@@ -973,7 +1039,9 @@ impl Repositorio {
         for m in mens.iter().filter(|m| conta_id.is_none_or(|c| c == m.conta_id) && m.cai_em(competencia)) {
             total += m.valor;
             por_categoria.somar(m.categoria.clone(), m.valor);
-            por_pessoa.somar(nome_pessoa(m.pessoa_id), m.valor);
+            for &(pessoa, parte) in &m.partes {
+                por_pessoa.somar(nome_pessoa(pessoa), parte);
+            }
             por_origem.somar("Mensalidades", m.valor);
         }
 
@@ -1050,7 +1118,9 @@ impl Repositorio {
             let mut c = m.inicio;
             while c <= ate {
                 if m.cai_em(c) {
-                    *total.entry(m.pessoa_id).or_default() += m.valor;
+                    for &(pessoa, parte) in &m.partes {
+                        *total.entry(pessoa).or_default() += parte;
+                    }
                 }
                 c = c.somar_meses(1);
             }
@@ -1228,6 +1298,7 @@ mod testes {
             primeira_cobranca: data.into(),
             categoria_id: None,
             pessoa_id: None,
+            divisoes: vec![],
         }
     }
 
@@ -1417,5 +1488,42 @@ mod testes {
             )
             .unwrap();
         assert_eq!((ed.descricao.as_str(), ed.valor, ed.tipo), ("Salário", 300000, TipoEntrada::Salario));
+    }
+
+    #[test]
+    fn mensalidade_dividida_com_a_mae() {
+        let (repo, cartao) = repo_com_cartao();
+        let mae = repo.criar_pessoa("Mãe").unwrap();
+        let mut m = mensalidade(cartao.id, 11000, "2026-11-05");
+        m.divisoes = vec![
+            Divisao { pessoa_id: PESSOA_EU, valor: 5500 },
+            Divisao { pessoa_id: mae.id, valor: 5500 },
+        ];
+        let criada = repo.criar_mensalidade(m.clone()).unwrap();
+        assert_eq!(criada.divisoes.len(), 2);
+
+        // Cada um aparece com a sua metade no resumo e no acerto.
+        let r = repo.resumo_mes(c("2026-11")).unwrap();
+        assert!(r.por_pessoa.contains(&TotalNomeado { nome: "Mãe".into(), valor: 5500 }));
+        assert!(r.por_pessoa.contains(&TotalNomeado { nome: "Eu".into(), valor: 5500 }));
+        assert_eq!(r.acertos[0].gasto, 5500);
+        let dez = repo.resumo_mes(c("2026-12")).unwrap();
+        assert_eq!(dez.acertos[0].gasto, 11000, "acumulado de dois meses");
+        // A fatura continua com o valor inteiro.
+        assert_eq!(repo.projetar_faturas(cartao.id, c("2026-11"), 1).unwrap()[0].valor, 11000);
+
+        // Divisão que não fecha é recusada.
+        let mut errada = m.clone();
+        errada.divisoes[1].valor = 1000;
+        assert!(repo.atualizar_mensalidade(criada.id, errada).is_err());
+
+        // Editar sem divisão volta a ser toda de uma pessoa.
+        let mut so_mae = m;
+        so_mae.divisoes = vec![];
+        so_mae.pessoa_id = Some(mae.id);
+        let e = repo.atualizar_mensalidade(criada.id, so_mae).unwrap();
+        assert!(e.divisoes.is_empty());
+        assert_eq!(e.pessoa_nome, "Mãe");
+        assert!(repo.excluir_pessoa(mae.id).is_err(), "pessoa com mensalidade não pode sumir");
     }
 }

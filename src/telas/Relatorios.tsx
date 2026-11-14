@@ -442,7 +442,7 @@ function Conteudo({
                   <td>{m.descricao}</td>
                   <td>{m.contaNome}</td>
                   <td>{m.diaCobranca}</td>
-                  <td>{m.pessoaNome}</td>
+                  <td>{m.divisoes.length > 0 ? `dividida (${m.divisoes.length} pessoas)` : m.pessoaNome}</td>
                   <td className="num">{reais(m.valor)}</td>
                 </tr>
               ))}

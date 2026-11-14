@@ -96,6 +96,8 @@ export interface NovaMensalidade {
   primeiraCobranca: string; // AAAA-MM-DD
   categoriaId: number | null;
   pessoaId: number | null;
+  /** Divisão entre pessoas; vazia = toda de pessoaId. */
+  divisoes: Divisao[];
 }
 
 export interface Mensalidade {
@@ -111,6 +113,7 @@ export interface Mensalidade {
   pessoaNome: string;
   inicio: string; // AAAA-MM
   fim: string | null; // último mês cobrado; null = ativa
+  divisoes: Divisao[];
 }
 
 export type TipoEntrada = "pix" | "salario" | "pagamento" | "reembolso" | "outro";

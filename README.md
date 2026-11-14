@@ -22,7 +22,7 @@ Os dados ficam só na sua máquina, num arquivo SQLite.
 - **Cadastros:** contas correntes, cartões (com dia de fechamento e vencimento), pessoas e categorias.
 - **Lançamentos**, em três tipos, todos editáveis:
   - **Compra** à vista ou parcelada (até 120x). Pode ser sua, só de outra pessoa ("minha mãe usou meu cartão") ou dividida ("de R$ 100, R$ 50 é da minha irmã").
-  - **Mensalidade:** gasto que se repete todo mês (ex.: assinatura do Claude), com dono, até ser cancelado.
+  - **Mensalidade:** gasto que se repete todo mês (ex.: assinatura do Claude) até ser cancelado. Pode ser sua, de outra pessoa ou dividida entre duas ou mais pessoas (ex.: Claude meio a meio com a mãe).
   - **Entrada:** pix, salário, pagamentos e reembolsos recebidos. Pode indicar quem pagou.
 - **Importar extrato ou fatura** em OFX ou CSV (Banco do Brasil, PicPay e outros bancos com colunas de data, descrição e valor). Mostra uma prévia, sugere a categoria pelo histórico, desmarca linhas de saldo e pagamento de fatura, e não importa a mesma linha duas vezes.
 - **Sugestão de mensalidades:** cobranças que se repetem em 3 meses ou mais aparecem para você cadastrar com um clique.

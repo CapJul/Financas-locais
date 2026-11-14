@@ -256,3 +256,4 @@ table + .cartao, table + h3 { margin-top: 20px; }
   .destaque, .cartao { break-inside: avoid; }
 }
 input[type="month"] { min-width: 160px; }
+.acoes-divisao button, .sem-quebra { white-space: nowrap; }

@@ -223,6 +223,7 @@ mod testes {
             primeira_cobranca: "2026-11-05".into(),
             categoria_id: None,
             pessoa_id: None,
+            divisoes: vec![],
         })
         .unwrap();
         assert!(repo.sugerir_mensalidades_em(hoje).unwrap().is_empty());
